@@ -220,7 +220,7 @@
       "blocked_by": [
         "T031"
       ],
-      "evidence": "rounds 1–5 acted on; round 5 (HIGH plan-before-stop regression, membership drift, phone arm/link-gen) fixed with 3 more tokio tests (9 control tests); round 6 pending"
+      "evidence": "rounds 1–6 acted on; round 6 (api_run dry-run/ordering, re-send vs stop race, phone user-stop, invented timestamps) fixed with 2 more tokio tests (11 control) + ProcessGateTest; round 7 pending"
     }
   ]
 }

@@ -573,15 +573,26 @@ async fn stop_processes(st: &Arc<AppState>) {
 /// Withdraw the plan from every remote device that received one (they kill their processes) and
 /// kill ours. Caller holds `proc_lock`. Used by stop, the host watcher and a failed bring-up (H6).
 async fn withdraw_and_kill_locked(st: &Arc<AppState>) {
+    // 1. No plan id → a reconnecting phone can no longer be handed the dying plan (round-6 #2).
+    st.run.write().unwrap().plan_id = None;
     stop_processes(st).await;
-    let ids: Vec<String> = st
-        .devices
-        .read()
-        .unwrap()
-        .values()
-        .filter(|d| !d.is_local && d.has_plan)
-        .map(|d| d.id.clone())
-        .collect();
+    // 2. Collect the members and clear their membership under ONE write guard, so a Hello that
+    //    slipped in before step 1 is either in the stop list or sees no current plan.
+    let ids: Vec<String> = {
+        let mut d = st.devices.write().unwrap();
+        let ids = d
+            .values()
+            .filter(|dev| !dev.is_local && dev.has_plan)
+            .map(|dev| dev.id.clone())
+            .collect();
+        for dev in d.values_mut() {
+            dev.role = "idle".into();
+            dev.has_plan = false;
+            dev.worker_ready_plan = None;
+            dev.last_plan = None;
+        }
+        ids
+    };
     for id in ids {
         let _ = st.plan_tx.send((
             id,
@@ -590,13 +601,6 @@ async fn withdraw_and_kill_locked(st: &Arc<AppState>) {
                 ..Default::default()
             },
         ));
-    }
-    let mut d = st.devices.write().unwrap();
-    for dev in d.values_mut() {
-        dev.role = "idle".into();
-        dev.has_plan = false;
-        dev.worker_ready_plan = None;
-        dev.last_plan = None;
     }
 }
 

@@ -16,75 +16,68 @@ import java.util.concurrent.TimeUnit
  */
 class LlamaRunner(private val ctx: Context) {
     private val libDir = File(ctx.applicationInfo.nativeLibraryDir)
-    private val lock = Any()
+    private val gate = ProcessGate()
     private var proc: Process? = null
-    /** Which run the current process belongs to, so an exit callback for an old process never masks a new one. */
-    private var procGen = 0
     /** (role, planId the process was started for, exit code) — only for the process we still own. */
     var onExit: ((role: String, planId: String, code: Int) -> Unit)? = null
     enum class Start { STARTED, REFUSED, FAILED }
-    /** "host", "worker" or "" — the role of the process we currently own. */
-    @Volatile var currentRole = ""
-        private set
-    /**
-     * Set by [stop] (link loss, stop plan, user), cleared by [arm] right before a plan is applied. A start
-     * that races a stop from another thread is refused instead of resurrecting a process nobody owns (round-4 #3).
-     */
-    private var armed = false
-    private var stillValid: () -> Boolean = { true }
-    /** Arm for one plan; [valid] is re-checked under the lock at start time (link generation, round-5 #3). */
-    fun arm(valid: () -> Boolean) = synchronized(lock) { armed = true; stillValid = valid }
+    val currentRole: String get() = gate.currentRole
+    val currentPlanId: String get() = gate.currentPlanId
     // Finite read timeout: a stalled model stream must not block the cancellable loop forever.
     private val http = OkHttpClient.Builder().readTimeout(60, TimeUnit.SECONDS).build()
     val modelsDir: File = File(ctx.getExternalFilesDir(null), "models").apply { mkdirs() }
 
     val available: Boolean get() = File(libDir, "libmeshai_rpc.so").exists()
 
+    /** Arm for one plan; [valid] (the link generation) is re-checked under the lock at start time (round-5 #3). */
+    fun arm(valid: () -> Boolean) = gate.arm(valid)
+
     /** Worker: bind only to the address of the paired link (H2), never 0.0.0.0. */
     fun startWorker(bindHost: String, port: Int, threads: Int, planId: String): Start =
         start("worker", planId, listOf(File(libDir, "libmeshai_rpc.so").path, "-H", bindHost, "-p", "$port", "-t", "$threads", "-c"))
 
-    /**
-     * Same rule as desktop/meshd/src/supervisor.rs `derive_args`: llama.cpp counts the output head as a
-     * layer, so offload ngl+1, pin the head to CPU, and split the (ngl+1) offloaded entries by worker
-     * layer counts with the extra head slot on the last worker.
-     */
     fun startHost(bindHost: String, model: File, nCtx: Int, threads: Int, workers: List<Pair<String, Int>>, workerLayers: List<Int>, planId: String): Start =
         start("host", planId, hostArgs(File(libDir, "libmeshai_server.so").path, model.path, nCtx, threads, bindHost, workers, workerLayers))
 
-    private fun start(newRole: String, planId: String, cmd: List<String>): Start = synchronized(lock) {
-        if (!armed || !stillValid()) { MeshState.log("✗ $newRole start refused: stopped (or link lost) before it could begin"); return@synchronized Start.REFUSED }
-        stopLocked(); armed = true // stopLocked disarms; this start is the plan's own
-        runCatching {
-            val pb = ProcessBuilder(cmd).redirectErrorStream(true)
-            pb.environment()["LD_LIBRARY_PATH"] = libDir.path
-            pb.environment()["HOME"] = ctx.filesDir.path
-            pb.directory(ctx.filesDir)
-            val p = pb.start()
-            proc = p; currentRole = newRole
-            val myGen = ++procGen
-            MeshState.set { it.copy(processRunning = true, lastError = null) }
-            MeshState.log("▶ ${cmd.drop(1).joinToString(" ")}")
-            Thread {
-                p.inputStream.bufferedReader().useLines { seq -> seq.forEach { MeshState.log(it.take(200)) } }
-                val code = runCatching { p.waitFor() }.getOrDefault(-1)
-                MeshState.log("■ $newRole process exited ($code)")
-                val stillCurrent = synchronized(lock) { procGen == myGen }
-                if (stillCurrent) { MeshState.set { it.copy(processRunning = false) }; onExit?.invoke(newRole, planId, code) }
-            }.start()
-            Start.STARTED
-        }.onFailure { MeshState.log("✗ start failed: ${it.message}"); MeshState.set { s -> s.copy(lastError = it.message) } }.getOrDefault(Start.FAILED)
+    private fun start(newRole: String, planId: String, cmd: List<String>): Start {
+        val started = gate.tryStart(newRole, planId) {
+            killProcess() // the previous process, if any, is ours to replace
+            runCatching {
+                val pb = ProcessBuilder(cmd).redirectErrorStream(true)
+                pb.environment()["LD_LIBRARY_PATH"] = libDir.path
+                pb.environment()["HOME"] = ctx.filesDir.path
+                pb.directory(ctx.filesDir)
+                pb.start()
+            }
+        } ?: run { MeshState.log("✗ $newRole start refused: stopped (or link lost) before it could begin"); return Start.REFUSED }
+        val (myGen, result) = started
+        val p = result.getOrElse { e ->
+            MeshState.log("✗ start failed: ${e.message}"); MeshState.set { s -> s.copy(lastError = e.message) }
+            return Start.FAILED
+        }
+        proc = p
+        MeshState.set { it.copy(processRunning = true, lastError = null) }
+        MeshState.log("▶ ${cmd.drop(1).joinToString(" ")}")
+        Thread {
+            p.inputStream.bufferedReader().useLines { seq -> seq.forEach { MeshState.log(it.take(200)) } }
+            val code = runCatching { p.waitFor() }.getOrDefault(-1)
+            MeshState.log("■ $newRole process exited ($code)")
+            if (gate.isCurrent(myGen)) { MeshState.set { it.copy(processRunning = false) }; onExit?.invoke(newRole, planId, code) }
+        }.start()
+        return Start.STARTED
     }
 
-    fun stop() = synchronized(lock) { stopLocked() }
+    /** Stop and disarm. Returns the (role, planId) that was running, so the caller can report it. */
+    fun stop(): Pair<String, String>? {
+        val had = gate.disarm() // any exit callback of the old process is now stale
+        killProcess()
+        MeshState.set { it.copy(processRunning = false) }
+        return had
+    }
 
-    private fun stopLocked() {
-        armed = false
-        procGen++ // any exit callback of the old process is now stale
-        currentRole = ""
+    private fun killProcess() {
         proc?.let { p -> runCatching { p.destroy(); if (!p.waitFor(2, TimeUnit.SECONDS)) p.destroyForcibly() } }
         proc = null
-        MeshState.set { it.copy(processRunning = false) }
     }
 
     /** Fetch a model from the coordinator catalog if not cached. Resumable (M7). Returns the local file. */

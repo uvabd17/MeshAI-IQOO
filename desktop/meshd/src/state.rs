@@ -477,9 +477,23 @@ impl AppState {
 
     /// Cheap checks that must pass *before* the current run is stopped (round-4 #12) — the plan
     /// itself is made only after the stop so the planner sees the freed memory (M4, round-5 #1).
-    pub fn precheck_run(&self, model_file: &str, host: Option<&str>) -> Result<(), String> {
-        if self.model(model_file).is_none() {
+    pub fn precheck_run(
+        &self,
+        model_file: &str,
+        n_ctx: u32,
+        host: Option<&str>,
+    ) -> Result<(), String> {
+        let Some(m) = self.model(model_file) else {
             return Err(format!("model not found: {model_file}"));
+        };
+        if n_ctx == 0 {
+            return Err("n_ctx must be > 0".into());
+        }
+        if m.info.n_ctx_train > 0 && n_ctx > m.info.n_ctx_train {
+            return Err(format!(
+                "n_ctx {n_ctx} exceeds the model's training context {} — pick a smaller context",
+                m.info.n_ctx_train
+            ));
         }
         if let Some(h) = host {
             let d = self.devices.read().unwrap();
