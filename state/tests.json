@@ -6,9 +6,9 @@
       "name": "verify --quick",
       "cmd": "scripts/verify --quick",
       "covers": "syntax, JSON schema, agent/skill frontmatter, proto (when protoc), cargo/gradle unit tests when present",
-      "last_run": "2026-09-23",
+      "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "20 ok, 0 failed; hook pipe-tests 0 failures"
+      "evidence": "23 ok, 0 failed (2026-09-24 04:05, after round-3 commit)"
     },
     {
       "id": "V002",
@@ -35,25 +35,25 @@
       "covers": "gguf parser on real file, planner rules, framing, pairing secrets, llama arg derivation (ngl+1/tensor-split), model name validation, control-plane heartbeat/reconnect over a real socket (tokio), planner device growth",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "19 passed (13 meshcore incl. fragmentation_adds_the_next_device_instead_of_failing; 6 meshd incl. heartbeats_keep_flowing_while_telemetry_streams — fake phone streams telemetry 25 s, ≥2 heartbeats received, secret reconnect supersedes old socket, wrong secret → Bye; mirror_snapshot_is_clean with name/path/log assertions). clippy -D warnings clean."
+      "evidence": "24 passed (13 meshcore + 11 meshd) after round-4; clippy --all-targets -D warnings clean"
     },
     {
       "id": "V005",
       "name": "local split simulation",
-      "cmd": "scratchpad/split-sim.sh (meshd API: cap laptop, 2 sim workers, run, 3 chats)",
+      "cmd": "scripts/split-sim.sh",
       "covers": "T009/T012 run path incl. worker wait, host watcher, /v1 proxy rows",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 03:10 (round-3 build): split plan laptop 0–6 / sim1 7–25 / sim2 26–27, ready in 2.07 s, 3 streamed chats, server 121 tok/s prompt / 22.5 tok/s gen, client 20.1–21.3 tok/s, stop ok; log scratchpad/split-sim-r3.log"
+      "evidence": "PASS 2026-09-24 04:40 (round-4 build): ready, 3 chats 21.1–24.6 tok/s client, stop ok (scripts/split-sim.sh)"
     },
     {
       "id": "V006",
       "name": "browser-driven admin QA",
-      "cmd": "node browser.mjs http://localhost:8080/admin/ --script admin-qa.mjs",
+      "cmd": "node ~/.claude/skills/browser-automation/browser.mjs http://localhost:8080/admin/ --script scripts/qa/admin-qa.mjs",
       "covers": "T031: plan preview, Run, ready, layer map, chat + timings, analytics, QR, catalog",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 03:12 (round-3 build): plan preview → run → ready (2.0 s) → plan view layer map → chat 228 ms TTFT / 23.6 tok/s / 24 tok → analytics (18 requests, avg 15.3 tok/s) → devices 3 → QR → catalog 4 → disk 3; 0 console errors, 0 failed requests"
+      "evidence": "PASS 2026-09-24 04:45 (round-4 build): plan → run → ready 2.0 s → layer map → chat 198 ms TTFT / 22.6 tok/s / 34 tok → analytics 23 requests → devices 3 → QR → catalog 4 → disk 3; 0 console errors, 0 failed requests (scripts/qa/admin-qa.mjs)"
     },
     {
       "id": "V007",
@@ -62,7 +62,7 @@
       "covers": "T020 NewApi and manifest rules",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 03:05 after round-3 Kotlin changes (serial plan actor, synchronized process ownership + exit reports, ensureActive, Locale.ROOT, 60 s read timeout); app-debug.apk 80.9 MB"
+      "evidence": "PASS 2026-09-24 04:35: lint + testDebugUnitTest (4) + assembleDebug, app-debug.apk 80.9 MB"
     },
     {
       "id": "V008",
@@ -76,11 +76,38 @@
     {
       "id": "V009",
       "name": "stop responsiveness",
-      "cmd": "POST /api/run then immediately POST /api/stop",
+      "cmd": "scripts/qa/stop-race.sh",
       "covers": "N5/M10: background bring-up with generation; stop is not blocked",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 03:11 (round-3 build, proc_lock): stop issued 0.05/0.3/1.0/2.5 s into bring-up → 114–121 ms each, status idle, 0 llama-server orphans, sim workers untouched"
+      "evidence": "PASS 2026-09-24 04:41 (round-4 build): stop at 0.05/0.3/1.0/2.5 s into bring-up → 114–124 ms, status idle, 0 orphans, sim workers untouched (scripts/qa/stop-race.sh)"
+    },
+    {
+      "id": "V010",
+      "name": "control-plane sessions (tokio, fake phone)",
+      "cmd": "cd desktop && cargo test -p meshd control::",
+      "covers": "heartbeats under telemetry load (≥3 in 25 s), secret reconnect supersedes and closes the old socket, wrong secret → Bye, plan re-sent on reconnect + has_plan, failure report honoured only for the current plan id, idle vs member disconnect, forget → Bye + close, silent link dropped, pre-auth 4 KiB frame cap, 5 s Hello deadline",
+      "last_run": "2026-09-24",
+      "status": "PASS",
+      "evidence": "6 control tests pass (26.3 s wall); 24 total (13 meshcore + 11 meshd)"
+    },
+    {
+      "id": "V011",
+      "name": "Android JVM unit tests",
+      "cmd": "cd android && ./gradlew testDebugUnitTest",
+      "covers": "HostArgsTest: phone host split rule == derive_args (ngl+1, head pinned, 0.440000,0.560000), single worker no split, no workers ngl 0, Locale-independent decimals",
+      "last_run": "2026-09-24",
+      "status": "PASS",
+      "evidence": "tests=4 failures=0 errors=0 (build/test-results/testDebugUnitTest)"
+    },
+    {
+      "id": "V012",
+      "name": "run/forget guards on a live run",
+      "cmd": "scratchpad r4-runtime.sh (curl): 416 header, refused phone-host, DELETE device mid-run",
+      "covers": "416 carries Content-Range */len; POST /api/run with a phone host and no --lan → 422 and the current run stays ready; DELETE /api/devices/{id} on a run member → run error 'was forgotten', device removed",
+      "last_run": "2026-09-24",
+      "status": "PASS",
+      "evidence": "HTTP 416 content-range: bytes */639446688; 422 + run status ready (1 llama-server); forget → status error, 'device sim-phone-1 was forgotten', devices 2"
     }
   ]
 }

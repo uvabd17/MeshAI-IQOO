@@ -41,19 +41,34 @@ class MeshService : Service() {
     private lateinit var client: ControlClient
     private var wake: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
-    /** Plans are applied strictly in order by one actor; the current job is cancelled and joined before the next (N4). */
-    private val plans = Channel<Plan>(Channel.UNLIMITED)
+    /**
+     * Plans are applied strictly in order by one actor; the current job is cancelled and joined before the next (N4).
+     * Each queued plan carries the link generation it arrived on: after a link loss everything queued on the old
+     * link is dropped, and link loss itself is a synthetic stop plan on the new generation (round-4 #3).
+     */
+    private class Queued(val plan: Plan, val linkGen: Int)
+    private val plans = Channel<Queued>(Channel.UNLIMITED)
+    private val linkGen = java.util.concurrent.atomic.AtomicInteger(0)
+    /** Owned by the actor coroutine only. */
     private var planJob: Job? = null
+    /** Plan id the current process belongs to, for failure reports (round-4 #1). */
+    @Volatile private var activePlanId = ""
 
     override fun onCreate() {
         super.onCreate()
         profiler = Profiler(this)
         runner = LlamaRunner(this)
-        client = ControlClient(this, scope, profiler, { plans.send(it) }, ::onLinkLost)
+        client = ControlClient(this, scope, profiler, { plans.send(Queued(it, linkGen.get())) }, ::onLinkLost)
         runner.onExit = { role, code -> if (code != 0 && (role == "worker" || role == "host")) report(role, false, "$role process exited ($code)") }
         // Actor: one plan at a time, in arrival order. A newer plan (or a stop) cancels and joins the running one
         // before it starts, so a stop can never be queued behind a long model download.
-        scope.launch { for (plan in plans) { planJob?.cancel(); planJob?.join(); planJob = scope.launch { applyPlan(plan) } } }
+        scope.launch {
+            for (q in plans) {
+                if (q.linkGen != linkGen.get()) { MeshState.log("dropping plan ${q.plan.planId} queued on a lost link"); continue }
+                planJob?.cancel(); planJob?.join()
+                planJob = scope.launch { applyPlan(q.plan) }
+            }
+        }
         MeshState.set { it.copy(threads = profiler.workerThreads(), cpusAllowed = profiler.cpusAllowed(), tier = profiler.tier().name.removePrefix("TIER_")) }
         if (!runner.available) MeshState.log("⚠ llama.cpp binaries missing from this build (jniLibs)")
     }
@@ -65,24 +80,31 @@ class MeshService : Service() {
                 acquireLocks(); client.connect(p); MeshState.log("joining ${p.meshId} @ ${p.host}")
             } ?: MeshState.log("✗ invalid pairing payload")
             ACTION_LEAVE -> { runner.stop(); client.disconnect(); releaseLocks(); MeshState.set { it.copy(role = "idle", planSummary = "", modelFile = "") }; stopSelf() }
-            ACTION_STOP_PROCESS -> { runner.stop(); MeshState.set { it.copy(role = "idle") } }
+            ACTION_STOP_PROCESS -> {
+                val role = runner.currentRole
+                runner.stop(); MeshState.set { it.copy(role = "idle") }
+                if (role.isNotEmpty()) report(role, false, "$role stopped from the phone") // meshd must not keep showing "ready" (round-4 #11)
+            }
         }
         return START_STICKY
     }
 
     /** Tell the coordinator about a failed process or a refused plan (round-3 #2/L2). */
     private fun report(job: String, ok: Boolean, note: String) =
-        client.notify(envelope { jobResult = jobResult { jobId = job; this.ok = ok; output = note.toByteArray().toByteString() } })
+        client.notify(envelope { jobResult = jobResult { jobId = job; this.ok = ok; output = note.toByteArray().toByteString(); planId = activePlanId } })
 
+    /** Runs on the control client's IO thread: kill now (and disarm the runner), then let the actor settle. */
     private fun onLinkLost() {
-        planJob?.cancel(); planJob = null
+        val gen = linkGen.incrementAndGet()
         MeshState.log("link lost — stopping llama.cpp process"); runner.stop()
+        plans.trySend(Queued(Plan.newBuilder().setPlanId("stop").build(), gen))
         MeshState.set { it.copy(role = "idle") }
         updateNotification("Reconnecting…")
     }
 
     private suspend fun applyPlan(plan: Plan) {
         MeshState.currentPlan = plan
+        activePlanId = plan.planId
         val me = plan.placementsList.firstOrNull { it.deviceId == profiler.deviceId }
         if (plan.planId == "stop" || me == null || !me.used) {
             runner.stop()
@@ -98,6 +120,7 @@ class MeshService : Service() {
         }
         val threads = if (plan.nThreads > 0) plan.nThreads else profiler.workerThreads()
         val bind = client.linkLocalAddress ?: "127.0.0.1"
+        runner.arm() // a stop/link loss from now on disarms it and any later start is refused
         applyPlanInner(plan, me, threads, bind)
     }
 

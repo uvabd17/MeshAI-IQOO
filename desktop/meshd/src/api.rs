@@ -320,7 +320,13 @@ async fn api_model_file(
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     if start >= len && len > 0 {
-        return (StatusCode::RANGE_NOT_SATISFIABLE, "").into_response();
+        // `bytes */len` lets a client whose .part is already complete finish instead of restarting.
+        return (
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            [(header::CONTENT_RANGE, format!("bytes */{len}"))],
+            "",
+        )
+            .into_response();
     }
     use tokio::io::AsyncSeekExt;
     if start > 0 && f.seek(std::io::SeekFrom::Start(start)).await.is_err() {
@@ -403,7 +409,7 @@ async fn api_plan(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Re
 /// while bring-up continues in the background (N5). Initiation is serialised (M10).
 async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Response {
     let _g = st.run_lock.lock().await;
-    supervisor::stop(&st).await;
+    // Validate before touching the current run: a refused request must not stop it (round-4 #12).
     st.refresh_local_profile();
     let plan = match st.make_plan(&r.model, r.n_ctx, r.host) {
         Ok(p) => p,
@@ -430,6 +436,7 @@ async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Res
         )
             .into_response();
     }
+    supervisor::stop(&st).await;
     match supervisor::start(st.clone(), plan.clone()).await {
         Ok(()) => Json(serde_json::json!({"ok": true, "plan": plan})).into_response(),
         Err(e) => (
@@ -450,9 +457,7 @@ async fn api_forget(
     State(st): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Json<serde_json::Value> {
-    st.devices.write().unwrap().remove(&id);
-    st.pairing.lock().unwrap().forget(&id);
-    st.save_paired();
+    supervisor::forget_device(&st, &id).await;
     Json(serde_json::json!({"ok": true}))
 }
 

@@ -32,3 +32,6 @@ include_dir = "0.7"
 mime_guess = "2"
 chrono = { version = "0.4", features = ["serde"] }
 local-ip-address = "0.6"
+
+[dev-dependencies]
+rand.workspace = true

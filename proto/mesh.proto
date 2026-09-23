@@ -109,7 +109,7 @@ message Plan {
 // ---- background jobs ----------------------------------------------------------------
 message JobSubmit  { string job_id = 1; string kind = 2; string title = 3; bytes payload = 4; }  // kind: "tests" | "review" | "docs" | "logs"
 message JobProgress{ string job_id = 1; float fraction = 2; string note = 3; string plan_id = 4; }
-message JobResult  { string job_id = 1; bool ok = 2; bytes output = 3; uint32 tokens = 4; float seconds = 5; }
+message JobResult  { string job_id = 1; bool ok = 2; bytes output = 3; uint32 tokens = 4; float seconds = 5; string plan_id = 6; } // plan_id: a failure report is only honoured for the current plan (round-4 #1)
 
 message Heartbeat  { uint64 t_unix_ms = 1; }
 message Bye        { string reason = 1; }
