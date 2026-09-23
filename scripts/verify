@@ -4,6 +4,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 QUICK=0; [[ "${1:-}" == "--quick" ]] && QUICK=1
+[[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"   # rustup installs outside the hook PATH
 fail=0; pass=0
 ok()   { echo "  ok   $1"; pass=$((pass+1)); }
 bad()  { echo "  FAIL $1"; fail=$((fail+1)); }

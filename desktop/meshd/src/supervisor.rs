@@ -132,7 +132,12 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
             ..Default::default()
         };
     }
-    tracing::info!("start: plan {} mode {:?} host {}", plan.model, plan.mode, plan.host_id);
+    tracing::info!(
+        "start: plan {} mode {:?} host {}",
+        plan.model,
+        plan.mode,
+        plan.host_id
+    );
     let la = llama_args(&st, &plan)?;
     st.run.write().unwrap().args = std::iter::once(la.program.clone())
         .chain(la.args.iter().cloned())
