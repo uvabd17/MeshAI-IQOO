@@ -1,0 +1,20 @@
+{
+  "$schema_note": "status ∈ PENDING|ACTIVE|BLOCKED|DONE. evidence = command/output/commit proving DONE. Keep IDs stable.",
+  "tasks": [
+    { "id": "T001", "title": "Cross-compile llama.cpp (ggml-rpc-server, llama-server, llama-bench) for arm64 with NDK r28", "phase": 0, "status": "DONE", "evidence": "commit 897dd3c; ELF aarch64 Android 30, LOAD Align 0x4000; scripts/android-build-llama.sh" },
+    { "id": "T002", "title": "Identify a physical arm64 phone for Phase 0 (model, SoC, RAM, Android version)", "phase": 0, "status": "BLOCKED", "blocked_by": [], "note": "needs the team; attached devices are x86_64 emulators" },
+    { "id": "T003", "title": "Host build of llama.cpp with GGML_RPC=ON; phone-alone and laptop-alone llama-bench on a 1–3B GGUF", "phase": 0, "status": "PENDING", "blocked_by": ["T002"] },
+    { "id": "T004", "title": "Laptop↔phone layer split over RPC (hotspot, then USB tethering): TTFT, pp/tg t/s, RTT p50/p95", "phase": 0, "status": "PENDING", "blocked_by": ["T003"] },
+    { "id": "T005", "title": "OpenCL build exposing Adreno as RPC device; prefill vs decode vs CPU", "phase": 0, "status": "PENDING", "blocked_by": ["T004"] },
+    { "id": "T006", "title": "10-min sustained run (thermal headroom, drain) and memory kill-threshold per tier", "phase": 0, "status": "PENDING", "blocked_by": ["T004"] },
+    { "id": "T007", "title": "GATE: split correct and ≥3 tok/s decode on a model that fits neither device → go/no-go for Phase 1 scope", "phase": 0, "status": "PENDING", "blocked_by": ["T004", "T006"] },
+    { "id": "T010", "title": "meshcore crate skeleton: prost build of proto/mesh.proto, framing, Noise XX pairing handshake, unit tests", "phase": 1, "status": "PENDING", "blocked_by": ["T007"] },
+    { "id": "T011", "title": "meshd: `pair` (QR in terminal), `serve` (control plane listener), `plan <gguf>` (GGUF metadata → placement with reasons)", "phase": 1, "status": "PENDING", "blocked_by": ["T010"] },
+    { "id": "T012", "title": "meshd: llama-server supervisor (--rpc from admitted workers), /v1 proxy on :8080, restart on replan", "phase": 1, "status": "PENDING", "blocked_by": ["T011"] },
+    { "id": "T020", "title": "Android app skeleton: Compose dashboard, connectedDevice FGS, wake+wifi locks, profiler (RAM/thermal/battery/cpuset)", "phase": 1, "status": "PENDING", "blocked_by": ["T007"] },
+    { "id": "T021", "title": "Android: embed ggml RPC server in-process with explicit devices[]; start/stop tied to plan lifecycle", "phase": 1, "status": "PENDING", "blocked_by": ["T020"] },
+    { "id": "T022", "title": "Android: QR pairing + meshcore.so via cargo-ndk/UniFFI; Telemetry stream to meshd", "phase": 1, "status": "PENDING", "blocked_by": ["T021", "T010"] },
+    { "id": "T030", "title": "Admin web pages Devices / Models / Plans&Jobs served by meshd at /admin", "phase": 1, "status": "PENDING", "blocked_by": ["T012"] },
+    { "id": "T040", "title": "Headline demo: Qwen3-Coder-30B-A3B across laptop + iQOO 15 (or +2 phones), internet off, coding CLI on localhost:8080/v1", "phase": 1, "status": "PENDING", "blocked_by": ["T012", "T022"] }
+  ]
+}

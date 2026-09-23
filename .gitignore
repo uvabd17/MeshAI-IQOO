@@ -5,3 +5,4 @@ build*/
 local.properties
 target/
 node_modules/
+state/.cache/
