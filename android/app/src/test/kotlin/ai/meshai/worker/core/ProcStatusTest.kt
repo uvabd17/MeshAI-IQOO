@@ -16,6 +16,12 @@ class ProcStatusTest {
     }
 
     @Test
+    fun pidFromProcessToString() {
+        assertEquals(12345, ProcStatus.pidFromToString("Process[pid=12345, hasExited=false]"))
+        assertEquals(0, ProcStatus.pidFromToString("java.lang.ProcessImpl@1a2b3c"))
+    }
+
+    @Test
     fun emptyIsZero() {
         assertEquals(0L, ProcStatus.rssAnonBytes(""))
     }

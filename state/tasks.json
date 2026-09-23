@@ -216,11 +216,11 @@
       "id": "T060",
       "title": "Independent review round 2 after the C1–C3/H1–H7 fixes (reviewer agent)",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T031"
       ],
-      "evidence": "rounds 1–10 acted on; round 10 (observed-drop credit counted unrelated memory) fixed: credit = min(placement, anonymous RSS of the run's own processes), laptop via /proc, phone via Telemetry.held_bytes; 7 credit tests + ProcStatusTest; run-guards 29 checks incl. credit == measured RSS; round 11 pending"
+      "evidence": "rounds 1–11 acted on; round 11 = PASS (4 LOWs, all fixed: plan_id read before the request, phone pid fallback via Process.toString + one-time warning + D024/K19 caveat, credit compared with /proc directly, D024 premise measured on every guard run: 998 MB credited vs 1.13 GB released). Android remains NOT executed on a device (T007 gate)."
     }
   ]
 }

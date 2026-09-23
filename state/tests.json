@@ -8,7 +8,7 @@
       "covers": "syntax, JSON schema, agent/skill frontmatter, proto (when protoc), cargo/gradle unit tests when present",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "24 ok, 0 failed (04:44 IST, round-10 batch)"
+      "evidence": "24 ok, 0 failed (04:54 IST, round-11 batch)"
     },
     {
       "id": "V002",
@@ -44,7 +44,7 @@
       "covers": "T009/T012 run path incl. worker wait, host watcher, /v1 proxy rows",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 04:42 IST (round-10 build, Gradle compiling concurrently) via scripts/qa/run-guards.sh: ready, 3 chats 2.4–8.7 tok/s client on the loaded machine, stop ok"
+      "evidence": "PASS 04:52 IST (round-11 build, quiet machine) via scripts/qa/run-guards.sh: ready, 3 chats up to 22.1 tok/s client, stop ok"
     },
     {
       "id": "V006",
@@ -53,7 +53,7 @@
       "covers": "T031: plan preview, Run, ready, layer map, chat + timings, analytics, QR, catalog",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 04:43 IST (round-10 build, machine loaded by Gradle): all views; chat 453 ms TTFT / 9.2 tok/s / 16 tok; 0 console errors, 0 failed requests"
+      "evidence": "PASS 04:53 IST (round-11 build): all views; chat 201 ms TTFT / 22.7 tok/s / 34 tok; 0 console errors, 0 failed requests"
     },
     {
       "id": "V007",
@@ -62,7 +62,7 @@
       "covers": "T020 NewApi and manifest rules",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS gradle-r10.log 04:43 IST: lint + testDebugUnitTest (18) + assembleDebug (child pid via reflection: Android's Process has no pid())"
+      "evidence": "PASS gradle-r11.log 04:52 IST: lint + testDebugUnitTest (19) + assembleDebug"
     },
     {
       "id": "V008",
@@ -80,7 +80,7 @@
       "covers": "N5/M10: background bring-up with generation; stop is not blocked",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 04:42 IST (round-10 build): stop at 0.05/0.3/1.0/2.5 s into bring-up, 116–127 ms, 0 orphans"
+      "evidence": "PASS 04:52 IST (round-11 build): stop at 0.05/0.3/1.0/2.5 s into bring-up, 114–122 ms, 0 orphans"
     },
     {
       "id": "V010",
@@ -98,7 +98,7 @@
       "covers": "HostArgsTest: phone host split rule == derive_args (ngl+1, head pinned, 0.440000,0.560000), single worker no split, no workers ngl 0, Locale-independent decimals",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "tests=18 failures=0 (HostArgsTest 4, ProcessGateTest 8, StopReportTest 3, ProcStatusTest 3), gradle-r10.log 04:43 IST"
+      "evidence": "tests=19 failures=0 (HostArgsTest 4, ProcessGateTest 8, StopReportTest 3, ProcStatusTest 4 incl. pid from Process.toString), gradle-r11.log 04:52 IST"
     },
     {
       "id": "V012",
@@ -107,7 +107,7 @@
       "covers": "416 carries Content-Range */len; POST /api/run with a phone host and no --lan → 422 and the current run stays ready; DELETE /api/devices/{id} on a run member → run error 'was forgotten', device removed",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 04:43 IST (round-10 build, run-guards.sh ALL OK, 29 checks): refusals (--lan, n_ctx, unknown model, 8B shortfall) 422 with the run still ready and plan_id unchanged; replacement path with the laptop MEASURED: immediate re-run during loading → credited=[]; after ready the ctx-4096 re-run credited local with 293,244,928 B = the llama-server's anonymous RSS exactly (placement 868,376,576 B) — a credit > 0 and ≤ both bounds; forget member → error, device removed. Not shown on hardware: a case where the credit flips the planner's answer (unit test only)"
+      "evidence": "PASS 04:53 IST (round-11 build, run-guards.sh ALL OK, 32 checks): refusals (--lan, n_ctx, unknown model, 8B shortfall) 422 with the run still ready and the plan_id read BEFORE the request unchanged and non-null; replacement path with the laptop MEASURED: immediate re-run during loading → credited=[]; after ready the ctx-4096 re-run credited local 293,187,584 B == RssAnon+RssShmem of the llama-server read independently from /proc (placement 868,376,576 B); D024 premise measured: ctx-8192 laptop-alone run credited 997,859,328 B and the stop released 1,133,116,416 B of MemAvailable (avg of 3 samples each side; within the 30 % tolerance, and in the safe direction — more released than credited); forget member → error, device removed. Not shown on hardware: the phone's held_bytes path and a case where the credit flips the planner's answer (unit tests only)"
     }
   ]
 }
