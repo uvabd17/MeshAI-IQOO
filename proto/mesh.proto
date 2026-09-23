@@ -1,0 +1,99 @@
+// MeshAI control plane, v0. Carried length-prefixed over one Noise-encrypted TCP stream per device.
+// The desktop node (meshd) is the server; each worker keeps one long-lived stream.
+// Tensor traffic is NOT here — that is ggml RPC on a separate port opened only after pairing.
+syntax = "proto3";
+package meshai.v0;
+
+message Envelope {
+  uint32 version = 1;            // protocol version, starts at 0
+  uint64 seq     = 2;
+  oneof body {
+    Hello         hello          = 10;
+    DeviceProfile profile        = 11;
+    Telemetry     telemetry      = 12;
+    Plan          plan           = 13;
+    JobSubmit     job_submit     = 14;
+    JobProgress   job_progress   = 15;
+    JobResult     job_result     = 16;
+    Heartbeat     heartbeat      = 17;
+    Bye           bye            = 18;
+  }
+}
+
+// ---- pairing / identity -------------------------------------------------------------
+message Hello {
+  string device_id      = 1;     // stable per install
+  string display_name   = 2;
+  bytes  one_time_token = 3;     // from the QR; consumed on first Hello
+  uint32 rpc_port       = 4;     // where this worker will expose ggml RPC once admitted (0 = not a worker)
+}
+
+// ---- what a device is ----------------------------------------------------------------
+enum Tier { TIER_UNSUPPORTED = 0; TIER_B = 1; TIER_A = 2; TIER_S = 3; }
+enum Backend { BACKEND_CPU = 0; BACKEND_OPENCL = 1; BACKEND_VULKAN = 2; BACKEND_HEXAGON_GENIEX = 3; }
+
+message Core { uint32 index = 1; uint32 max_khz = 2; uint32 capacity = 3; bool allowed = 4; } // allowed = in current cpuset
+
+message BackendBench { Backend backend = 1; float prompt_tps = 2; float decode_tps = 3; string bench_model = 4; bool correct = 5; }
+
+message DeviceProfile {
+  string   device_id     = 1;
+  string   os            = 2;    // "android/15", "linux/6.17", "windows/11"
+  string   soc           = 3;    // Build.SOC_MODEL or cpuinfo model
+  repeated string cpu_features = 4;  // asimddp, i8mm, sve, avx512 ...
+  repeated Core cores    = 5;
+  uint64   total_bytes   = 6;
+  uint64   headroom_bytes= 7;    // reserve so the OS does not kill us (tuned per tier in Phase 0)
+  Tier     tier          = 8;
+  repeated BackendBench backends = 9;
+  repeated ModelFile models = 10;  // GGUFs already cached on this device
+}
+
+message ModelFile { string name = 1; string sha256 = 2; uint64 bytes = 3; string path = 4; }
+
+// ---- live state, sent every 1-2 s while paired ------------------------------------------
+message Telemetry {
+  string device_id        = 1;
+  uint64 avail_bytes      = 2;
+  float  thermal_headroom = 3;   // 0..1, PowerManager.getThermalHeadroom; 1.0 = severe throttling
+  uint32 thermal_status   = 4;   // PowerManager.THERMAL_STATUS_*
+  float  battery_pct      = 5;
+  bool   charging         = 6;
+  int32  current_ma       = 7;   // BATTERY_PROPERTY_CURRENT_NOW / 1000 (negative = discharging)
+  float  rtt_ms_p50       = 8;   // measured by the desktop, echoed back for the phone dashboard
+  float  rtt_ms_p95       = 9;
+  string cpus_allowed     = 10;  // /proc/self/status Cpus_allowed_list (shows the cpuset we live in)
+  float  decode_tps       = 11;  // when a plan is active
+  uint32 trim_level       = 12;  // last onTrimMemory level (Android), 0 otherwise
+}
+
+// ---- the decision -------------------------------------------------------------------
+enum Mode { MODE_SINGLE = 0; MODE_LAYER_SPLIT = 1; MODE_PARALLEL_JOBS = 2; }
+
+message Placement {
+  string  device_id   = 1;
+  bool    used        = 2;
+  uint32  layer_start = 3;   // inclusive, for MODE_LAYER_SPLIT
+  uint32  layer_end   = 4;   // exclusive
+  Backend backend     = 5;
+  uint64  bytes       = 6;   // weights + KV this device must hold
+  string  reason      = 7;   // human-readable: "holds 31 layers (8.4 GB of 8.9 GB free)" or "rejected: RTT p95 41 ms"
+}
+
+message Plan {
+  string  plan_id    = 1;
+  string  model_name = 2;
+  string  model_sha  = 3;
+  Mode    mode       = 4;
+  uint32  n_ctx      = 5;
+  repeated Placement placements = 6;
+  string  summary    = 7;    // one line for the dashboards
+}
+
+// ---- background jobs ----------------------------------------------------------------
+message JobSubmit  { string job_id = 1; string kind = 2; string title = 3; bytes payload = 4; }  // kind: "tests" | "review" | "docs" | "logs"
+message JobProgress{ string job_id = 1; float fraction = 2; string note = 3; }
+message JobResult  { string job_id = 1; bool ok = 2; bytes output = 3; uint32 tokens = 4; float seconds = 5; }
+
+message Heartbeat  { uint64 t_unix_ms = 1; }
+message Bye        { string reason = 1; }
