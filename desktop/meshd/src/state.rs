@@ -186,9 +186,6 @@ pub struct AppState {
     pub proc_lock: tokio::sync::Mutex<()>,
     /// Bumped by every stop/start; background tasks quit when their generation is stale.
     pub run_gen: AtomicU64,
-    /// `avail_bytes` of every member when the run started: the credit for a replacement plan is
-    /// capped at the drop observed since then (round-9 #1).
-    pub run_baseline: RwLock<BTreeMap<String, u64>>,
     pub conn_seq: AtomicU64,
     /// Mirror mode: the last (state, runs) snapshot pushed by a coordinator.
     pub mirror: RwLock<Option<(serde_json::Value, serde_json::Value)>>,
@@ -244,7 +241,6 @@ impl AppState {
             run_lock: tokio::sync::Mutex::new(()),
             proc_lock: tokio::sync::Mutex::new(()),
             run_gen: AtomicU64::new(0),
-            run_baseline: RwLock::new(BTreeMap::new()),
             conn_seq: AtomicU64::new(0),
             mirror: RwLock::new(None),
             mirror_token: RwLock::new(None),
@@ -340,6 +336,7 @@ impl AppState {
             thermal_headroom: 0.0,
             charging: true,
             battery_pct: 100.0,
+            held_bytes: self.local_held_bytes(),
             ..Default::default()
         };
         let mut d = self.devices.write().unwrap();
@@ -519,11 +516,15 @@ impl AppState {
         Ok(())
     }
 
-    /// Device capacities for planning a *replacement* run. A device is credited only with memory it
-    /// demonstrably holds for the live run (round-9 #1): the run must be `ready`, the device must be
-    /// online with *measured* memory (no override) sampled after `ready_ms`, and the credit is
-    /// `min(placement bytes, avail at start − avail now)`. A run that is still loading, a phone
-    /// whose report predates readiness, or a placement whose memory never showed up earn nothing.
+    /// Device capacities for planning a *replacement* run. A device is credited only with memory
+    /// its own llama.cpp processes demonstrably hold for the live run (round-10 #1): the run must
+    /// be `ready`, the device online with *measured* memory (no override) sampled after `ready_ms`,
+    /// and the credit is `min(placement bytes, held_bytes)` where `held_bytes` is the anonymous RSS
+    /// of the run's child processes on that device — what a stop actually returns to
+    /// MemAvailable (file-backed mmap'd weights stay in page cache and were never subtracted from
+    /// `avail_bytes` in the first place). The laptop measures its own children in
+    /// `refresh_local_profile`; phones report theirs in `Telemetry.held_bytes`. A loading run, a
+    /// stale sample, an override, an offline device or a rejected placement earn nothing.
     /// Returns (caps, credited bytes per device).
     pub fn credited_caps(&self) -> (Vec<DeviceCap>, Vec<(String, u64)>) {
         let plan = self.plan.read().unwrap().clone();
@@ -531,7 +532,6 @@ impl AppState {
             let r = self.run.read().unwrap();
             (r.status == "ready", r.ready_ms.unwrap_or(u64::MAX))
         };
-        let baseline = self.run_baseline.read().unwrap().clone();
         let d = self.devices.read().unwrap();
         let mut credits = Vec::new();
         let caps = d
@@ -547,11 +547,11 @@ impl AppState {
                         .iter()
                         .find(|pl| pl.device_id == dev.id && pl.role != planner::Role::Rejected)
                 });
-                let (Some(p), Some(before)) = (placement, baseline.get(&dev.id)) else {
+                let Some(p) = placement else {
                     return cap;
                 };
-                let now = dev.telemetry.as_ref().map(|t| t.avail_bytes).unwrap_or(0);
-                let credit = p.bytes.min(before.saturating_sub(now));
+                let held = dev.telemetry.as_ref().map(|t| t.held_bytes).unwrap_or(0);
+                let credit = p.bytes.min(held);
                 if credit > 0 {
                     cap.usable_bytes = cap.usable_bytes.saturating_add(credit);
                     credits.push((dev.id.clone(), credit));
@@ -562,19 +562,19 @@ impl AppState {
         (caps, credits)
     }
 
-    /// Snapshot every member's current `avail_bytes` at run start (see `credited_caps`).
-    pub fn record_run_baseline(&self, plan: &Plan) {
-        let d = self.devices.read().unwrap();
-        let mut b = self.run_baseline.write().unwrap();
-        b.clear();
-        for p in &plan.placements {
-            if p.role == planner::Role::Rejected {
-                continue;
-            }
-            if let Some(t) = d.get(&p.device_id).and_then(|dev| dev.telemetry.as_ref()) {
-                b.insert(p.device_id.clone(), t.avail_bytes);
+    /// Anonymous RSS (+ shmem) of our own llama.cpp children: the host llama-server and the local
+    /// ggml-rpc-server, if running. Zero when nothing is running or /proc is unreadable.
+    pub fn local_held_bytes(&self) -> u64 {
+        let mut pids = Vec::new();
+        if let Some(p) = *self.host_pid.lock().unwrap() {
+            pids.push(p);
+        }
+        if let Some(c) = self.local_worker.lock().unwrap().as_ref() {
+            if let Some(p) = c.id() {
+                pids.push(p);
             }
         }
+        pids.into_iter().map(rss_anon_of).sum()
     }
 
     /// Plan a replacement run against credited capacities (see `credited_caps`).
@@ -783,6 +783,33 @@ pub fn qr_terminal(payload: &str) -> String {
         .build()
 }
 
+/// Anonymous + shmem resident bytes of a process from `/proc/<pid>/status` (0 if unreadable).
+pub fn rss_anon_of(pid: u32) -> u64 {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .map(|t| parse_rss_anon(&t))
+        .unwrap_or(0)
+}
+
+/// `RssAnon` + `RssShmem` in bytes from a `/proc/<pid>/status` text; falls back to `VmRSS − RssFile`
+/// on kernels without the split fields.
+pub fn parse_rss_anon(status: &str) -> u64 {
+    let kb = |key: &str| -> Option<u64> {
+        status
+            .lines()
+            .find(|l| l.starts_with(key))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<u64>().ok())
+    };
+    match (kb("RssAnon:"), kb("RssShmem:")) {
+        (Some(a), sh) => (a + sh.unwrap_or(0)) * 1024,
+        (None, _) => {
+            let rss = kb("VmRSS:").unwrap_or(0);
+            let file = kb("RssFile:").unwrap_or(0);
+            rss.saturating_sub(file) * 1024
+        }
+    }
+}
+
 #[cfg(test)]
 mod credit_tests {
     use super::*;
@@ -804,16 +831,18 @@ mod credit_tests {
         dev.telemetry = Some(proto::Telemetry {
             device_id: id.into(),
             avail_bytes: avail,
+            battery_pct: 100.0,
+            charging: true,
             ..Default::default()
         });
         dev.telemetry_ms = now_ms();
         st.devices.write().unwrap().insert(id.into(), dev);
     }
 
-    fn set_avail(st: &AppState, id: &str, avail: u64, sampled_ms: u64) {
+    fn set_held(st: &AppState, id: &str, held: u64, sampled_ms: u64) {
         let mut d = st.devices.write().unwrap();
         let dev = d.get_mut(id).unwrap();
-        dev.telemetry.as_mut().unwrap().avail_bytes = avail;
+        dev.telemetry.as_mut().unwrap().held_bytes = held;
         dev.telemetry_ms = sampled_ms;
     }
 
@@ -830,19 +859,17 @@ mod credit_tests {
         }
     }
 
-    /// Start a fake run: plan recorded, baseline snapshotted, status as given.
     fn live_run(st: &AppState, placements: Vec<planner::Placement>, status: &str) {
         let plan = Plan {
             model: "m.gguf".into(),
             mode: planner::Mode::LayerSplit,
             n_ctx: 2048,
-            host_id: "local".into(),
+            host_id: "phone".into(),
             placements,
             summary: String::new(),
             total_needed_bytes: 0,
             total_usable_bytes: 0,
         };
-        st.record_run_baseline(&plan);
         *st.plan.write().unwrap() = Some(plan);
         let mut r = st.run.write().unwrap();
         r.status = status.into();
@@ -862,6 +889,18 @@ mod credit_tests {
     }
 
     #[test]
+    fn parse_rss_anon_reads_anon_plus_shmem_or_falls_back() {
+        let t = "Name:\tllama-server\nVmRSS:\t   900000 kB\nRssAnon:\t  300000 kB\nRssFile:\t  590000 kB\nRssShmem:\t   10000 kB\n";
+        assert_eq!(parse_rss_anon(t), 310_000 * 1024);
+        let old = "VmRSS:\t 900000 kB\nRssFile:\t 590000 kB\n";
+        assert_eq!(parse_rss_anon(old), 310_000 * 1024);
+        assert_eq!(parse_rss_anon(""), 0);
+        // Our own process: readable and non-zero.
+        assert!(rss_anon_of(std::process::id()) > 0);
+        assert_eq!(rss_anon_of(u32::MAX), 0);
+    }
+
+    #[test]
     fn a_loading_run_earns_no_credit() {
         let st = st();
         remote(&st, "phone", 3_000_000_000, true, None);
@@ -870,12 +909,12 @@ mod credit_tests {
             vec![placement("phone", 2_000_000_000, planner::Role::Worker)],
             "loading",
         );
-        set_avail(&st, "phone", 1_000_000_000, now_ms()); // memory did drop, but the run is not ready
+        set_held(&st, "phone", 1_000_000_000, now_ms()); // the process holds memory, but the run is not ready
         assert!(st.credited_caps().1.is_empty());
     }
 
     #[test]
-    fn credit_is_the_observed_drop_capped_at_the_placement() {
+    fn credit_is_the_held_bytes_capped_at_the_placement() {
         let st = st();
         remote(&st, "phone", 3_000_000_000, true, None);
         live_run(
@@ -883,19 +922,43 @@ mod credit_tests {
             vec![placement("phone", 2_000_000_000, planner::Role::Worker)],
             "ready",
         );
-        // Observed drop 1.5 GB < placement 2 GB → credit 1.5 GB.
-        set_avail(&st, "phone", 1_500_000_000, now_ms());
-        let base = 1_500_000_000u64.saturating_sub(HEADROOM_BYTES);
+        set_held(&st, "phone", 1_500_000_000, now_ms());
+        let base = 3_000_000_000u64.saturating_sub(HEADROOM_BYTES);
         assert_eq!(usable(&st, "phone"), Some(base + 1_500_000_000));
         assert_eq!(
             st.credited_caps().1,
             vec![("phone".to_string(), 1_500_000_000)]
         );
-        // Observed drop 2.5 GB > placement → capped at 2 GB.
-        set_avail(&st, "phone", 500_000_000, now_ms());
+        set_held(&st, "phone", 2_500_000_000, now_ms()); // more than the placement: capped
         assert_eq!(
             st.credited_caps().1,
             vec![("phone".to_string(), 2_000_000_000)]
+        );
+    }
+
+    #[test]
+    fn unrelated_memory_pressure_is_never_credited() {
+        // avail dropped by 2 GB (another app), the run's process holds 0.3 GB: credit is 0.3 GB.
+        let st = st();
+        remote(&st, "phone", 3_000_000_000, true, None);
+        live_run(
+            &st,
+            vec![placement("phone", 2_000_000_000, planner::Role::Worker)],
+            "ready",
+        );
+        {
+            let mut d = st.devices.write().unwrap();
+            d.get_mut("phone")
+                .unwrap()
+                .telemetry
+                .as_mut()
+                .unwrap()
+                .avail_bytes = 1_000_000_000;
+        }
+        set_held(&st, "phone", 300_000_000, now_ms());
+        assert_eq!(
+            st.credited_caps().1,
+            vec![("phone".to_string(), 300_000_000)]
         );
     }
 
@@ -917,9 +980,9 @@ mod credit_tests {
             "ready",
         );
         let ready_ms = st.run.read().unwrap().ready_ms.unwrap();
-        set_avail(&st, "stale", 1_000_000_000, ready_ms - 10); // sampled before the run was ready
-        set_avail(&st, "capped", 1_000_000_000, now_ms());
-        set_avail(&st, "bystander", 1_000_000_000, now_ms());
+        set_held(&st, "stale", 1_000_000_000, ready_ms - 10); // sampled before the run was ready
+        set_held(&st, "capped", 1_000_000_000, now_ms());
+        set_held(&st, "bystander", 1_000_000_000, now_ms());
         assert!(
             st.credited_caps().1.is_empty(),
             "{:?}",
@@ -933,29 +996,17 @@ mod credit_tests {
     fn no_live_plan_means_no_credit() {
         let st = st();
         remote(&st, "phone", 3_000_000_000, true, None);
+        set_held(&st, "phone", 1_000_000_000, now_ms());
         assert!(st.credited_caps().1.is_empty());
     }
 
     /// The rule end to end through the planner: a model that does not fit the measured figures
-    /// fits once the live run's held memory is credited — and still does not fit if the credit is
-    /// too small (round-9 #3).
+    /// fits once the live run's held memory is credited — and still does not fit if what the run
+    /// holds is too small.
     #[test]
-    fn credited_plan_turns_does_not_fit_into_ok_only_when_the_drop_covers_it() {
+    fn credited_plan_turns_does_not_fit_into_ok_only_when_held_memory_covers_it() {
         let st = st();
-        // Laptop: 2.5 GB available now; a 1.2 GB model needs ~1.3 GB with KV. HEADROOM is 2 GB.
-        {
-            let mut d = st.devices.write().unwrap();
-            let mut local =
-                AppState::blank_device("local", "laptop".into(), DeviceKind::Laptop, true);
-            local.online = true;
-            local.telemetry = Some(proto::Telemetry {
-                device_id: "local".into(),
-                avail_bytes: HEADROOM_BYTES + 2_500_000_000,
-                ..Default::default()
-            });
-            local.telemetry_ms = now_ms();
-            d.insert("local".into(), local);
-        }
+        remote(&st, "phone", HEADROOM_BYTES + 2_500_000_000, true, None);
         st.models.write().unwrap().push(ModelEntry {
             file: "m.gguf".into(),
             info: ModelInfo {
@@ -979,42 +1030,27 @@ mod credit_tests {
             },
             sha256: None,
         });
-        // A live run on the laptop that now holds 3 GB of a 3 GB placement (baseline 5.5 → 2.5 GB).
-        {
-            let mut d = st.devices.write().unwrap();
-            d.get_mut("local")
-                .unwrap()
-                .telemetry
-                .as_mut()
-                .unwrap()
-                .avail_bytes = HEADROOM_BYTES + 5_500_000_000;
-        }
         live_run(
             &st,
-            vec![placement("local", 3_000_000_000, planner::Role::Host)],
+            vec![placement("phone", 3_000_000_000, planner::Role::Host)],
             "ready",
         );
-        set_avail(&st, "local", HEADROOM_BYTES + 2_500_000_000, now_ms());
-        // Ask for a context that needs ~1.2 GB weights + 1.4 GB KV ≈ 2.6 GB: does not fit 2.5 GB uncredited …
-        let n_ctx = 350_000;
+        let n_ctx = 350_000; // ~1.2 GB weights + ~1.4 GB KV ≈ 2.6 GB > 2.5 GB usable
         assert!(
             st.make_plan("m.gguf", n_ctx, None).is_err(),
             "must not fit without credit"
         );
-        // … but fits with the 3 GB credit.
+        set_held(&st, "phone", 3_000_000_000, now_ms());
         let (plan, credits) = st
             .make_plan_credited("m.gguf", n_ctx, None)
-            .expect("fits once credited");
+            .expect("fits once the held 3 GB is credited");
         assert_eq!(plan.mode, planner::Mode::Single);
-        assert_eq!(credits, vec![("local".to_string(), 3_000_000_000)]);
-        // Same live run but the baseline was only 0.05 GB above today's figure: the observed drop
-        // (and so the credit) is 0.05 GB, which is not enough.
-        set_avail(&st, "local", HEADROOM_BYTES + 2_550_000_000, now_ms());
-        let plan = st.plan.read().unwrap().clone().unwrap();
-        st.record_run_baseline(&plan);
-        set_avail(&st, "local", HEADROOM_BYTES + 2_500_000_000, now_ms());
-        let err = st.make_plan_credited("m.gguf", n_ctx, None);
-        assert!(err.is_err(), "a 0.05 GB credit must not make it fit");
+        assert_eq!(credits, vec![("phone".to_string(), 3_000_000_000)]);
+        set_held(&st, "phone", 50_000_000, now_ms());
+        assert!(
+            st.make_plan_credited("m.gguf", n_ctx, None).is_err(),
+            "a 0.05 GB credit must not make it fit"
+        );
     }
 }
 

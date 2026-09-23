@@ -185,7 +185,6 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
     let gen = st.run_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let plan_id = format!("plan-{}", now_ms());
     st.set_roles_from_plan(&plan);
-    st.record_run_baseline(&plan);
     *st.plan.write().unwrap() = Some(plan.clone());
     {
         let mut r = st.run.write().unwrap();
@@ -586,7 +585,6 @@ async fn stop_processes(st: &Arc<AppState>) {
 async fn withdraw_and_kill_locked(st: &Arc<AppState>) {
     // 1. No plan id → a reconnecting phone can no longer be handed the dying plan (round-6 #2).
     st.run.write().unwrap().plan_id = None;
-    st.run_baseline.write().unwrap().clear();
     stop_processes(st).await;
     // 2. Collect the members and clear their membership under ONE write guard, so a Hello that
     //    slipped in before step 1 is either in the stop list or sees no current plan.

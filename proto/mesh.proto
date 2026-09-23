@@ -74,6 +74,7 @@ message Telemetry {
   string cpus_allowed     = 10;  // /proc/self/status Cpus_allowed_list (shows the cpuset we live in)
   float  decode_tps       = 11;  // when a plan is active
   uint32 trim_level       = 12;  // last onTrimMemory level (Android), 0 otherwise
+  uint64 held_bytes       = 13;  // anonymous RSS of this device's own llama.cpp child process(es): what stopping the run returns to MemAvailable (D024)
 }
 
 // ---- the decision -------------------------------------------------------------------

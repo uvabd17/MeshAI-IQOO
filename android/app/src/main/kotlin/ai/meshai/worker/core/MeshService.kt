@@ -58,7 +58,7 @@ class MeshService : Service() {
         super.onCreate()
         profiler = Profiler(this)
         runner = LlamaRunner(this)
-        client = ControlClient(this, scope, profiler, { lastReceivedPlan.set(if (it.planId == "stop") null else it); plans.send(Queued(it, linkGen.get())) }, ::onLinkLost)
+        client = ControlClient(this, scope, profiler, { lastReceivedPlan.set(if (it.planId == "stop") null else it); plans.send(Queued(it, linkGen.get())) }, ::onLinkLost, { runner.heldBytes() })
         runner.onExit = { role, planId, code -> if (code != 0 && (role == "worker" || role == "host")) report(role, false, "$role process exited ($code)", planId) }
         // Actor: one plan at a time, in arrival order. A newer plan (or a stop) cancels and joins the running one
         // before it starts, so a stop can never be queued behind a long model download.
