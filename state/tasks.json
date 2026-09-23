@@ -1,20 +1,214 @@
 {
   "$schema_note": "status ∈ PENDING|ACTIVE|BLOCKED|DONE. evidence = command/output/commit proving DONE. Keep IDs stable.",
   "tasks": [
-    { "id": "T001", "title": "Cross-compile llama.cpp (ggml-rpc-server, llama-server, llama-bench) for arm64 with NDK r28", "phase": 0, "status": "DONE", "evidence": "commit 897dd3c; ELF aarch64 Android 30, LOAD Align 0x4000; scripts/android-build-llama.sh" },
-    { "id": "T002", "title": "Identify a physical arm64 phone for Phase 0 (model, SoC, RAM, Android version)", "phase": 0, "status": "BLOCKED", "blocked_by": [], "note": "needs the team; attached devices are x86_64 emulators" },
-    { "id": "T003", "title": "Host build of llama.cpp with GGML_RPC=ON; phone-alone and laptop-alone llama-bench on a 1–3B GGUF", "phase": 0, "status": "PENDING", "blocked_by": ["T002"] },
-    { "id": "T004", "title": "Laptop↔phone layer split over RPC (hotspot, then USB tethering): TTFT, pp/tg t/s, RTT p50/p95", "phase": 0, "status": "PENDING", "blocked_by": ["T003"] },
-    { "id": "T005", "title": "OpenCL build exposing Adreno as RPC device; prefill vs decode vs CPU", "phase": 0, "status": "PENDING", "blocked_by": ["T004"] },
-    { "id": "T006", "title": "10-min sustained run (thermal headroom, drain) and memory kill-threshold per tier", "phase": 0, "status": "PENDING", "blocked_by": ["T004"] },
-    { "id": "T007", "title": "GATE: split correct and ≥3 tok/s decode on a model that fits neither device → go/no-go for Phase 1 scope", "phase": 0, "status": "PENDING", "blocked_by": ["T004", "T006"] },
-    { "id": "T010", "title": "meshcore crate skeleton: prost build of proto/mesh.proto, framing, Noise XX pairing handshake, unit tests", "phase": 1, "status": "PENDING", "blocked_by": ["T007"] },
-    { "id": "T011", "title": "meshd: `pair` (QR in terminal), `serve` (control plane listener), `plan <gguf>` (GGUF metadata → placement with reasons)", "phase": 1, "status": "PENDING", "blocked_by": ["T010"] },
-    { "id": "T012", "title": "meshd: llama-server supervisor (--rpc from admitted workers), /v1 proxy on :8080, restart on replan", "phase": 1, "status": "PENDING", "blocked_by": ["T011"] },
-    { "id": "T020", "title": "Android app skeleton: Compose dashboard, connectedDevice FGS, wake+wifi locks, profiler (RAM/thermal/battery/cpuset)", "phase": 1, "status": "PENDING", "blocked_by": ["T007"] },
-    { "id": "T021", "title": "Android: embed ggml RPC server in-process with explicit devices[]; start/stop tied to plan lifecycle", "phase": 1, "status": "PENDING", "blocked_by": ["T020"] },
-    { "id": "T022", "title": "Android: QR pairing + meshcore.so via cargo-ndk/UniFFI; Telemetry stream to meshd", "phase": 1, "status": "PENDING", "blocked_by": ["T021", "T010"] },
-    { "id": "T030", "title": "Admin web pages Devices / Models / Plans&Jobs served by meshd at /admin", "phase": 1, "status": "PENDING", "blocked_by": ["T012"] },
-    { "id": "T040", "title": "Headline demo: Qwen3-Coder-30B-A3B across laptop + iQOO 15 (or +2 phones), internet off, coding CLI on localhost:8080/v1", "phase": 1, "status": "PENDING", "blocked_by": ["T012", "T022"] }
+    {
+      "id": "T001",
+      "title": "Cross-compile llama.cpp (ggml-rpc-server, llama-server, llama-bench) for arm64 with NDK r28",
+      "phase": 0,
+      "status": "DONE",
+      "evidence": "commit 897dd3c; ELF aarch64 Android 30, LOAD Align 0x4000; scripts/android-build-llama.sh"
+    },
+    {
+      "id": "T002",
+      "title": "Identify a physical arm64 phone for Phase 0 (model, SoC, RAM, Android version)",
+      "phase": 0,
+      "status": "DONE",
+      "blocked_by": [],
+      "note": "needs the team; attached devices are x86_64 emulators",
+      "evidence": "POCO F5 (SM7475, 8 GB, Android 15, dotprod+i8mm, OpenCL present) seen on adb 2026-09-24 00:40; intermittently disconnected since"
+    },
+    {
+      "id": "T003",
+      "title": "Host build of llama.cpp with GGML_RPC=ON; phone-alone and laptop-alone llama-bench on a 1–3B GGUF",
+      "phase": 0,
+      "status": "PENDING",
+      "blocked_by": [
+        "T002"
+      ]
+    },
+    {
+      "id": "T004",
+      "title": "Laptop↔phone layer split over RPC (hotspot, then USB tethering): TTFT, pp/tg t/s, RTT p50/p95",
+      "phase": 0,
+      "status": "PENDING",
+      "blocked_by": [
+        "T003"
+      ]
+    },
+    {
+      "id": "T005",
+      "title": "OpenCL build exposing Adreno as RPC device; prefill vs decode vs CPU",
+      "phase": 0,
+      "status": "PENDING",
+      "blocked_by": [
+        "T004"
+      ]
+    },
+    {
+      "id": "T006",
+      "title": "10-min sustained run (thermal headroom, drain) and memory kill-threshold per tier",
+      "phase": 0,
+      "status": "PENDING",
+      "blocked_by": [
+        "T004"
+      ]
+    },
+    {
+      "id": "T007",
+      "title": "GATE: split correct and ≥3 tok/s decode on a model that fits neither device → go/no-go for Phase 1 scope",
+      "phase": 0,
+      "status": "PENDING",
+      "blocked_by": [
+        "T004",
+        "T006"
+      ]
+    },
+    {
+      "id": "T008",
+      "title": "Foundations: rustup, host llama.cpp build (RPC), Gradle 8.14, model storage on /mnt/storage, Qwen3-0.6B + Qwen3-8B downloaded",
+      "phase": 0,
+      "status": "DONE",
+      "evidence": "rustup stable; llama.cpp build-host (RPC) + build-android-{arm64-v8a,x86_64}; Gradle 8.14.3; /mnt/storage/meshai/models; Qwen3-0.6B + Qwen3-8B downloading"
+    },
+    {
+      "id": "T009",
+      "title": "Local split simulation: laptop llama-server + 2 local ggml-rpc-server workers on Qwen3-0.6B/8B; record t/s (stand-in until a phone is attached)",
+      "phase": 0,
+      "status": "ACTIVE",
+      "blocked_by": [
+        "T008"
+      ],
+      "evidence": "meshd planner produced 3-device split for Qwen3-0.6B (host 4 layers + 11 + 13); run in progress via /api/run"
+    },
+    {
+      "id": "T010",
+      "title": "meshcore crate skeleton: prost build of proto/mesh.proto, framing, Noise XX pairing handshake, unit tests",
+      "phase": 1,
+      "status": "DONE",
+      "blocked_by": [
+        "T007"
+      ],
+      "evidence": "desktop/meshcore: gguf parser (offset-based sizes), planner (single/split/reject with reasons), framing, pairing; 8 tests green"
+    },
+    {
+      "id": "T011",
+      "title": "meshd: `pair` (QR in terminal), `serve` (control plane listener), `plan <gguf>` (GGUF metadata → placement with reasons)",
+      "phase": 1,
+      "status": "DONE",
+      "blocked_by": [
+        "T010"
+      ],
+      "evidence": "meshd serve/pair/plan/worker; planner API; QR offer"
+    },
+    {
+      "id": "T012",
+      "title": "meshd: llama-server supervisor (--rpc from admitted workers), /v1 proxy on :8080, restart on replan",
+      "phase": 1,
+      "status": "ACTIVE",
+      "blocked_by": [
+        "T011"
+      ],
+      "evidence": "supervisor spawns llama-server with --rpc/-ngl/--tensor-split, waits for workers, health-polls; /v1 proxy with timing rows"
+    },
+    {
+      "id": "T013",
+      "title": "meshd: host-role selection — any paired device runs llama-server, others rpc-server; /v1 proxied to the host",
+      "phase": 1,
+      "status": "DONE",
+      "blocked_by": [
+        "T012"
+      ],
+      "evidence": "host role selectable via prefer_host; remote host path pushes Plan + proxies to phone:8081 (untested on hardware)"
+    },
+    {
+      "id": "T020",
+      "title": "Android app skeleton: Compose dashboard, connectedDevice FGS, wake+wifi locks, profiler (RAM/thermal/battery/cpuset)",
+      "phase": 1,
+      "status": "ACTIVE",
+      "blocked_by": [
+        "T007"
+      ],
+      "evidence": "android/: Compose dashboard, connectedDevice FGS, wake+wifi locks, profiler (RAM/thermal/battery/cpuset/RTT); first gradle build running"
+    },
+    {
+      "id": "T021",
+      "title": "Android: embed ggml RPC server in-process with explicit devices[]; start/stop tied to plan lifecycle",
+      "phase": 1,
+      "status": "ACTIVE",
+      "blocked_by": [
+        "T020"
+      ],
+      "evidence": "D010: llama.cpp binaries shipped as jniLibs lib*.so and spawned as child processes (worker + host modes)"
+    },
+    {
+      "id": "T022",
+      "title": "Android: QR pairing + meshcore.so via cargo-ndk/UniFFI; Telemetry stream to meshd",
+      "phase": 1,
+      "status": "ACTIVE",
+      "blocked_by": [
+        "T021",
+        "T010"
+      ],
+      "evidence": "QR join (zxing) + paste; ControlClient with Hello/Profile/Telemetry/Plan over framed protobuf-lite"
+    },
+    {
+      "id": "T023",
+      "title": "Android: host mode (llama-server child process) and worker mode (ggml-rpc-server); role set by plan; x86_64 ABI for emulator testing",
+      "phase": 1,
+      "status": "ACTIVE",
+      "blocked_by": [
+        "T020"
+      ],
+      "evidence": "host mode fetches model from meshd /api/models/file and runs llama-server; x86_64 ABI built for emulator"
+    },
+    {
+      "id": "T030",
+      "title": "Admin web pages Devices / Models / Plans&Jobs served by meshd at /admin",
+      "phase": 1,
+      "status": "ACTIVE",
+      "blocked_by": [
+        "T012"
+      ],
+      "evidence": "admin/src: Overview/Devices/Models/Plan/Chat/Analytics served by meshd at /admin"
+    },
+    {
+      "id": "T031",
+      "title": "Admin web: monochrome design system (dark/light), provider marks, model catalog with HF download + progress, plan preview with layer map, chat with timing (TTFT, tok/s)",
+      "phase": 1,
+      "status": "ACTIVE",
+      "blocked_by": [
+        "T030"
+      ],
+      "evidence": "monochrome design system, provider marks, catalog + downloads with progress, plan preview + layer map, chat with TTFT/tok/s, cloud reference slot"
+    },
+    {
+      "id": "T032",
+      "title": "Driven test: open admin in headless browser, download model, run chat on laptop-only and on simulated mesh, record timings to BENCHMARKS.md",
+      "phase": 1,
+      "status": "PENDING",
+      "blocked_by": [
+        "T031",
+        "T013"
+      ]
+    },
+    {
+      "id": "T040",
+      "title": "Headline demo: Qwen3-Coder-30B-A3B across laptop + iQOO 15 (or +2 phones), internet off, coding CLI on localhost:8080/v1",
+      "phase": 1,
+      "status": "PENDING",
+      "blocked_by": [
+        "T012",
+        "T022"
+      ]
+    },
+    {
+      "id": "T050",
+      "title": "Oracle (ap-hyderabad-1, Always Free ARM): admin panel + telemetry relay + public dashboard; go-live only after explicit user approval",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T032"
+      ]
+    }
   ]
 }

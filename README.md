@@ -33,3 +33,7 @@ scripts/phase0-split-test.sh path/to/small.gguf   # physical arm64 phone on USB 
 ```
 
 Gate: a model that does not fit one device runs split, output is correct, decode ≥ 3 tok/s. Everything after that is in the architecture doc.
+
+
+
+
