@@ -1,0 +1,11 @@
+[Unit]
+Description=MeshAI coordinator (laptop)
+After=network-online.target
+[Service]
+Environment=MESHAI_MODELS=/mnt/storage/meshai/models
+Environment=MESHAI_LLAMA_BIN=%h/Documents/GitHub/MeshAI-IQOO/third_party/llama.cpp/build-host/bin
+WorkingDirectory=%h/Documents/GitHub/MeshAI-IQOO
+ExecStart=%h/Documents/GitHub/MeshAI-IQOO/desktop/target/release/meshd serve
+Restart=on-failure
+[Install]
+WantedBy=default.target
