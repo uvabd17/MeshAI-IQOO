@@ -1,0 +1,32 @@
+{
+  "$schema_note": "One entry per verification that exists. status ∈ PASS|FAIL|BLOCKED|NEVER_RUN. The verifier agent updates this.",
+  "tests": [
+    {
+      "id": "V001",
+      "name": "verify --quick",
+      "cmd": "scripts/verify --quick",
+      "covers": "syntax, JSON schema, agent/skill frontmatter, proto (when protoc), cargo/gradle unit tests when present",
+      "last_run": "2026-09-23",
+      "status": "PASS",
+      "evidence": "20 ok, 0 failed; hook pipe-tests 0 failures"
+    },
+    {
+      "id": "V002",
+      "name": "arm64 build",
+      "cmd": "scripts/android-build-llama.sh",
+      "covers": "T001",
+      "last_run": "2026-09-23",
+      "status": "PASS",
+      "evidence": "ELF aarch64, Android 30, NDK r28c, LOAD Align 0x4000"
+    },
+    {
+      "id": "V003",
+      "name": "phase0 split",
+      "cmd": "scripts/phase0-split-test.sh <gguf> [ip]",
+      "covers": "T003–T004",
+      "last_run": null,
+      "status": "BLOCKED",
+      "evidence": "no physical arm64 phone attached"
+    }
+  ]
+}

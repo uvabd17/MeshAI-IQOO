@@ -1,0 +1,8 @@
+# Progress log (newest at bottom; one line per meaningful step)
+
+- 2026-09-23 — Read all six design PDFs; summarized v1→v2 evolution.
+- 2026-09-23 — Branch `native-mesh`; initial commit of docs.
+- 2026-09-23 — Upstream audit (llama.cpp RPC v7, #11957/#22850/#25876, OpenCL Adreno 840 + MXFP4, Hexagon, NNAPI deprecated → GenieX, prima.cpp not a base, FGS 6 h caps, cpusets, 16 KB pages, iQOO 15 12/16 GB, dev laptop 18 GB). Written to docs/ARCHITECTURE-v3-native-mesh.md.
+- 2026-09-23 — Cross-compiled llama.cpp for arm64 (NDK r28.2): ggml-rpc-server, llama-server, llama-bench; 16 KB aligned. scripts/android-build-llama.sh, scripts/phase0-split-test.sh, proto/mesh.proto (compiles). Commit 897dd3c.
+- 2026-09-23 — Autonomous dev kit: CLAUDE.md, 5 agents (researcher/architect/engineer/verifier/reviewer), 3 skills (research-protocol/android-native/phase0-bench), 5 hooks (bash safety, edit lint, stop verify, session start, pre-compact), scripts/verify, state/, docs/DECISIONS+RESEARCH+RISKS+BENCHMARKS.
+- NEXT — T002: get a physical arm64 phone attached, then `/phase0-bench <small.gguf>`.

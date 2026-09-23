@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Verification gate. `--quick` = syntax + schema + unit tests (Stop hook). No flag = full, incl. builds when toolchains exist.
+# Exit non-zero on any failure. Prints one line per check.
+set -u
+cd "$(dirname "$0")/.." || exit 1
+QUICK=0; [[ "${1:-}" == "--quick" ]] && QUICK=1
+fail=0; pass=0
+ok()   { echo "  ok   $1"; pass=$((pass+1)); }
+bad()  { echo "  FAIL $1"; fail=$((fail+1)); }
+skip() { echo "  skip $1"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+echo "== verify $([[ $QUICK == 1 ]] && echo quick || echo full) =="
+
+# shell
+for f in scripts/*.sh scripts/verify .claude/hooks/*.sh; do
+  [[ -f "$f" ]] || continue
+  bash -n "$f" 2>/dev/null && ok "bash -n $f" || bad "bash -n $f"
+done
+if have shellcheck; then shellcheck -S warning scripts/*.sh .claude/hooks/*.sh >/dev/null 2>&1 && ok shellcheck || bad shellcheck; else skip "shellcheck (not installed)"; fi
+
+# json
+for f in .claude/settings.json state/tasks.json state/tests.json; do
+  [[ -f "$f" ]] || continue
+  jq empty "$f" 2>/dev/null && ok "json $f" || bad "json $f"
+done
+# tasks schema: every task has id/title/status; status in the allowed set; blocked_by refs exist
+if [[ -f state/tasks.json ]]; then
+  jq -e '
+    (.tasks|map(.id)) as $ids
+    | all(.tasks[]; (.id|type=="string") and (.title|type=="string") and (.status|IN("PENDING","ACTIVE","BLOCKED","DONE")))
+    and all(.tasks[]; (.blocked_by // []) | all(. as $b | $ids | index($b) != null))
+  ' state/tasks.json >/dev/null 2>&1 && ok "tasks.json schema" || bad "tasks.json schema"
+fi
+
+# agents/skills frontmatter present
+for f in .claude/agents/*.md; do head -1 "$f" | grep -q '^---$' && grep -q '^name:' "$f" && grep -q '^description:' "$f" && ok "agent $f" || bad "agent frontmatter $f"; done
+for f in .claude/skills/*/SKILL.md; do head -1 "$f" | grep -q '^---$' && grep -q '^description:' "$f" && ok "skill $f" || bad "skill frontmatter $f"; done
+
+# proto
+if [[ -f proto/mesh.proto ]]; then
+  if have protoc; then protoc --proto_path=proto --descriptor_set_out=/dev/null proto/mesh.proto 2>/dev/null && ok "protoc mesh.proto" || bad "protoc mesh.proto"
+  elif [[ $QUICK == 0 ]] && have docker; then docker run --rm -v "$PWD/proto:/p:ro" -w /p rvolosatovs/protoc:latest --proto_path=/p --descriptor_set_out=/dev/null mesh.proto >/dev/null 2>&1 && ok "protoc (docker) mesh.proto" || bad "protoc (docker) mesh.proto"
+  else skip "protoc (not installed; full mode uses docker)"; fi
+fi
+
+# rust
+if [[ -f desktop/Cargo.toml ]]; then
+  if have cargo; then
+    (cd desktop && cargo fmt --check >/dev/null 2>&1) && ok "cargo fmt" || bad "cargo fmt"
+    (cd desktop && cargo test --quiet >/dev/null 2>&1) && ok "cargo test" || bad "cargo test"
+    [[ $QUICK == 0 ]] && { (cd desktop && cargo clippy --quiet -- -D warnings >/dev/null 2>&1) && ok "cargo clippy" || bad "cargo clippy"; }
+  else bad "desktop/Cargo.toml exists but cargo not installed"; fi
+fi
+
+# android
+if [[ -f android/gradlew ]]; then
+  if [[ $QUICK == 1 ]]; then (cd android && ./gradlew -q testDebugUnitTest >/dev/null 2>&1) && ok "gradle unit tests" || bad "gradle unit tests"
+  else (cd android && ./gradlew -q lint testDebugUnitTest assembleDebug >/dev/null 2>&1) && ok "gradle lint+test+assembleDebug" || bad "gradle lint+test+assembleDebug"; fi
+fi
+
+# admin web
+if [[ -f admin/package.json ]]; then
+  if have npm; then (cd admin && npm test --silent >/dev/null 2>&1) && ok "npm test" || bad "npm test"; else skip "npm"; fi
+fi
+
+echo "== $pass ok, $fail failed =="
+[[ $fail -eq 0 ]]
