@@ -176,11 +176,11 @@
       "id": "T031",
       "title": "Admin web: monochrome design system (dark/light), provider marks, model catalog with HF download + progress, plan preview with layer map, chat with timing (TTFT, tok/s)",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T030"
       ],
-      "evidence": "browser QA re-run pending after the offer-flow change"
+      "evidence": "browser QA on hardened meshd (19f2e4f): plan preview, Run, ready 2.0 s, layer map, chat 198 ms TTFT / 21.3 tok/s, analytics, QR via POST offer, catalog; 0 console errors"
     },
     {
       "id": "T032",
@@ -216,7 +216,7 @@
       "id": "T060",
       "title": "Independent review round 2 after the C1–C3/H1–H7 fixes (reviewer agent)",
       "phase": 1,
-      "status": "PENDING",
+      "status": "ACTIVE",
       "blocked_by": [
         "T031"
       ]
