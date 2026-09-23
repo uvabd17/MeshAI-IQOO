@@ -15,7 +15,9 @@ import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.IBinder
 import android.os.PowerManager
+import ai.meshai.proto.Tier
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -35,6 +37,8 @@ class MeshService : Service() {
     private lateinit var client: ControlClient
     private var wake: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
+    /** The plan currently being applied (model fetch + process start); cancelled by a stop plan or link loss (N4). */
+    private var planJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -58,6 +62,7 @@ class MeshService : Service() {
     }
 
     private fun onLinkLost() {
+        planJob?.cancel(); planJob = null
         if (MeshState.ui.value.processRunning) { MeshState.log("link lost — stopping llama.cpp process"); runner.stop() }
         MeshState.set { it.copy(role = "idle") }
         updateNotification("Reconnecting…")
@@ -65,6 +70,7 @@ class MeshService : Service() {
 
     private suspend fun applyPlan(plan: Plan) {
         MeshState.currentPlan = plan
+        planJob?.cancel()
         val me = plan.placementsList.firstOrNull { it.deviceId == profiler.deviceId }
         if (plan.planId == "stop" || me == null || !me.used) {
             runner.stop()
@@ -72,8 +78,18 @@ class MeshService : Service() {
             updateNotification("Idle — paired")
             return
         }
+        if (profiler.tier() == Tier.TIER_UNSUPPORTED) {
+            MeshState.log("✗ refusing plan: this phone is below the floor (arm64 + dotprod + i8mm, ≥ 8 GB)")
+            MeshState.set { it.copy(lastError = "unsupported device", role = "idle") }
+            return
+        }
         val threads = if (plan.nThreads > 0) plan.nThreads else profiler.workerThreads()
         val bind = client.linkLocalAddress ?: "127.0.0.1"
+        val job = scope.launch { applyPlanInner(plan, me, threads, bind) }
+        planJob = job
+    }
+
+    private suspend fun applyPlanInner(plan: Plan, me: ai.meshai.proto.Placement, threads: Int, bind: String) {
         MeshState.set { it.copy(planSummary = plan.summary, layerStart = me.layerStart, layerEnd = me.layerEnd, modelFile = plan.modelFile, threads = threads) }
         if (me.isHost) {
             MeshState.set { it.copy(role = "host") }
@@ -82,8 +98,7 @@ class MeshService : Service() {
                 val coord = plan.coordinator.ifEmpty { MeshState.ui.value.coordinator.substringBefore(':') + ":8080" }
                 val file = runner.ensureModel("http://$coord", plan.modelFile)
                 val workers = plan.placementsList.filter { it.used && !it.isHost }
-                val ngl = workers.sumOf { it.layerEnd - it.layerStart }
-                runner.startHost(bind, file, plan.nCtx, threads, workers.map { it.addr to it.rpcPort }, ngl, workers.map { it.splitWeight })
+                runner.startHost(bind, file, plan.nCtx, threads, workers.map { it.addr to it.rpcPort }, workers.map { it.layerEnd - it.layerStart })
             } catch (e: Exception) { MeshState.log("✗ host: ${e.message}"); MeshState.set { it.copy(lastError = e.message) } }
         } else {
             MeshState.set { it.copy(role = "worker") }

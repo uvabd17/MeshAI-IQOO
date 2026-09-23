@@ -25,12 +25,21 @@ class LlamaRunner(private val ctx: Context) {
     fun startWorker(bindHost: String, port: Int, threads: Int): Boolean =
         start(listOf(File(libDir, "libmeshai_rpc.so").path, "-H", bindHost, "-p", "$port", "-t", "$threads", "-c"))
 
-    fun startHost(bindHost: String, model: File, nCtx: Int, threads: Int, workers: List<Pair<String, Int>>, nglLayers: Int, split: List<Double>): Boolean {
+    /**
+     * Same rule as desktop/meshd/src/supervisor.rs `derive_args`: llama.cpp counts the output head as a
+     * layer, so offload ngl+1, pin the head to CPU, and split the (ngl+1) offloaded entries by worker
+     * layer counts with the extra head slot on the last worker.
+     */
+    fun startHost(bindHost: String, model: File, nCtx: Int, threads: Int, workers: List<Pair<String, Int>>, workerLayers: List<Int>): Boolean {
+        val ngl = workerLayers.sum()
         val args = mutableListOf(File(libDir, "libmeshai_server.so").path, "-m", model.path, "-c", "$nCtx", "-t", "$threads", "--host", bindHost, "--port", "8081", "--jinja", "--metrics", "--reasoning", "off")
         if (workers.isNotEmpty()) {
-            // Same semantics as desktop/meshd/src/supervisor.rs: ngl+1 (the output head counts), head pinned to CPU.
-            args += listOf("--rpc", workers.joinToString(",") { "${it.first}:${it.second}" }, "-ngl", "${nglLayers + 1}", "--override-tensor", "output\\.weight=CPU")
-            if (workers.size > 1) args += listOf("--tensor-split", split.joinToString(",") { "%.6f".format(it) })
+            args += listOf("--rpc", workers.joinToString(",") { "${it.first}:${it.second}" }, "-ngl", "${ngl + 1}", "--override-tensor", "output\\.weight=CPU")
+            if (workers.size > 1) {
+                val total = (ngl + 1).toDouble()
+                val split = workerLayers.mapIndexed { i, n -> (if (i == workerLayers.lastIndex) n + 1 else n) / total }
+                args += listOf("--tensor-split", split.joinToString(",") { "%.6f".format(it) })
+            }
         } else args += listOf("-ngl", "0")
         return start(args)
     }
@@ -81,6 +90,7 @@ class LlamaRunner(private val ctx: Context) {
                 java.io.FileOutputStream(part, resumed).use { out ->
                     val buf = ByteArray(1 shl 20)
                     while (true) {
+                        if (!kotlinx.coroutines.currentCoroutineContext().isActive) error("download cancelled")
                         val n = inp.read(buf); if (n < 0) break
                         out.write(buf, 0, n); got += n
                         val pct = if (total > 0) (100 * got / total).toInt() else -1

@@ -85,11 +85,11 @@
       "id": "T010",
       "title": "meshcore crate skeleton: prost build of proto/mesh.proto, framing, Noise XX pairing handshake, unit tests",
       "phase": 1,
-      "status": "DONE",
+      "status": "ACTIVE",
       "blocked_by": [
         "T007"
       ],
-      "evidence": "meshcore: gguf, planner, framing, pairing (token→per-device secret, D013; Noise deferred), 10 tests"
+      "evidence": "meshcore: gguf, planner, framing, pairing (token→per-device secret, D013; Noise deferred), 10 tests — held at ACTIVE until the Phase-0 gate (T007) passes on hardware (review round 2)"
     },
     {
       "id": "T011",
@@ -105,11 +105,11 @@
       "id": "T012",
       "title": "meshd: llama-server supervisor (--rpc from admitted workers), /v1 proxy on :8080, restart on replan",
       "phase": 1,
-      "status": "DONE",
+      "status": "ACTIVE",
       "blocked_by": [
         "T011"
       ],
-      "evidence": "supervisor rewritten after review: workers-first ordering, plan-id-keyed worker-ready, TCP check, child watcher for the whole run, teardown on failure, serialized run/stop; local split verified 22 tok/s"
+      "evidence": "supervisor rewritten after review: workers-first ordering, plan-id-keyed worker-ready, TCP check, child watcher for the whole run, teardown on failure, serialized run/stop; local split verified 22 tok/s — held at ACTIVE until the Phase-0 gate (T007) passes on hardware (review round 2)"
     },
     {
       "id": "T013",
@@ -143,14 +143,14 @@
     },
     {
       "id": "T022",
-      "title": "Android: QR pairing + meshcore.so via cargo-ndk/UniFFI; Telemetry stream to meshd",
+      "title": "Android: QR/secret pairing + control client (framed protobuf-lite; UniFFI dropped for v1, D018); Telemetry stream to meshd",
       "phase": 1,
-      "status": "DONE",
+      "status": "ACTIVE",
       "blocked_by": [
         "T021",
         "T010"
       ],
-      "evidence": "control client with token→secret pairing, 30 s read timeout, plans handled off the read loop; UniFFI dropped for v1 (D018)"
+      "evidence": "control client with token→secret pairing, 30 s read timeout, plans handled off the read loop; UniFFI dropped for v1 (D018) — held at ACTIVE until the Phase-0 gate (T007) passes on hardware (review round 2)"
     },
     {
       "id": "T023",
@@ -219,7 +219,8 @@
       "status": "ACTIVE",
       "blocked_by": [
         "T031"
-      ]
+      ],
+      "evidence": "round 2 FAIL: N1 heartbeat (fixed, D022), laptop worker bind (D020), mirror stripping + test, tier gate, phone-host split rule, resumable file serving, cancellable phone plan jobs, greedy planner + tests, .so files untracked for real; round 3 pending"
     }
   ]
 }

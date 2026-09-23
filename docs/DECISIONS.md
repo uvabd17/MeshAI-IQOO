@@ -58,3 +58,12 @@ Format: **D### — title** · date · context · decision · alternatives reject
 
 ## D019 — x86_64 Android build is test-only
 2026-09-24 · Built without AVX2/FMA/F16C so it runs on the emulator's CPU; never shipped to users (the floor is arm64). Status: accepted.
+
+## D020 — The laptop's RPC worker binds to its end of the host phone's control link
+2026-09-24 · Round-2 review: `local_ip()` is the default-route interface, which on venue Wi-Fi is not the paired link. **Decision:** every control connection records the coordinator's local socket address; the laptop worker (phone-host mode) binds to the address of the host phone's link, and the plan sent to each device carries the laptop address *as that device sees it*. `meshd worker` (manual CLI) still uses the default-route address and prints it. Status: accepted.
+
+## D021 — `--lan` exposure rules
+2026-09-24 · With `--lan`, every API route requires the token except the admin static files, `/api/catalog` and `GET /api/models/file/*` (weights are not secret and a phone host must fetch them). Even without a token, non-GET requests must carry `application/json` (defeats cross-site form posts) and, on loopback, the Host header must be a loopback name (defeats DNS rebinding). Status: accepted.
+
+## D022 — Heartbeat on a fixed interval (fixes a round-2 CRITICAL)
+2026-09-24 · The coordinator's heartbeat lived in a `select!` sleep branch that was re-created on every loop iteration, so it never fired while telemetry streamed every 2 s; combined with the phone's read timeout every real link would drop every ~30 s. **Decision:** `tokio::time::interval(10 s)` created once per connection; phone read timeout 45 s. Not yet executed on a device (no phone on USB) — T021 stays open until a 5-minute link test is logged. Status: accepted, verification pending.

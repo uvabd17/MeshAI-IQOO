@@ -93,6 +93,15 @@ impl PairingBook {
             return None;
         }
         let key = Self::digest(&raw);
+        // A token cannot claim a reserved id or take over a device that is already paired
+        // (forget it in the admin first); otherwise a token holder could hijack a phone's identity.
+        if device_id.is_empty()
+            || device_id == "local"
+            || device_id.starts_with("sim-")
+            || self.paired.contains_key(device_id)
+        {
+            return None;
+        }
         self.pending.remove(&key)?;
         let mut secret = vec![0u8; 32];
         rand::thread_rng().fill_bytes(&mut secret);
@@ -165,6 +174,11 @@ mod tests {
         assert!(b
             .redeem(b"00000000000000000000000000000000", "phone-3", "bogus")
             .is_none());
+        // a fresh token cannot re-pair an existing id or claim a reserved one
+        let o2 = b.offer("h", 1);
+        assert!(b.redeem(o2.token.as_bytes(), "phone-1", "hijack").is_none());
+        let o3 = b.offer("h", 1);
+        assert!(b.redeem(o3.token.as_bytes(), "local", "hijack").is_none());
     }
 
     #[test]

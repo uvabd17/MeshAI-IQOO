@@ -9,11 +9,16 @@
 //!   `output.weight` back to the host with `--override-tensor`;
 //! * `--tensor-split f1,f2` places offloaded entries by cumulative fraction, so worker k gets
 //!   `layers_k / (ngl+1)` and the last worker one extra slot for the head entry.
+//!
+//! Lifecycle: `start` returns as soon as the plan is recorded and the background task is spawned;
+//! the task is tagged with a generation number and stops touching state once `stop` bumps it
+//! (N5: Stop is never blocked behind a slow start).
 
 use crate::state::{now_ms, AppState};
 use meshcore::planner::{Mode, Plan, Role};
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -88,27 +93,45 @@ pub fn derive_args(
     (args, ngl)
 }
 
+/// Address of the laptop as the host device must reach it: our end of the host's control link.
+fn local_addr_for(st: &AppState, host_id: &str) -> String {
+    st.devices
+        .read()
+        .unwrap()
+        .get(host_id)
+        .and_then(|d| d.link_local_addr.clone())
+        .or_else(|| local_ip_address::local_ip().ok().map(|i| i.to_string()))
+        .unwrap_or_else(|| "127.0.0.1".into())
+}
+
 pub fn llama_args(st: &AppState, plan: &Plan) -> anyhow::Result<LlamaArgs> {
     let model = st
         .model(&plan.model)
         .ok_or_else(|| anyhow::anyhow!("model missing"))?;
-    let devices = st.devices.read().unwrap();
-    let host = devices
-        .get(&plan.host_id)
-        .ok_or_else(|| anyhow::anyhow!("host device missing"))?;
+    let host_is_local;
     let mut workers: Vec<(String, u16)> = Vec::new();
     let mut layer_counts: Vec<u32> = Vec::new();
-    for p in plan.placements.iter().filter(|p| p.role == Role::Worker) {
-        let d = devices
-            .get(&p.device_id)
-            .ok_or_else(|| anyhow::anyhow!("worker device missing"))?;
-        let addr = if d.is_local {
-            "127.0.0.1".to_string()
-        } else {
-            d.addr.clone().unwrap_or_default()
-        };
-        workers.push((addr, d.rpc_port));
-        layer_counts.push(p.layer_end - p.layer_start);
+    {
+        let devices = st.devices.read().unwrap();
+        let host = devices
+            .get(&plan.host_id)
+            .ok_or_else(|| anyhow::anyhow!("host device missing"))?;
+        host_is_local = host.is_local;
+        for p in plan.placements.iter().filter(|p| p.role == Role::Worker) {
+            let d = devices
+                .get(&p.device_id)
+                .ok_or_else(|| anyhow::anyhow!("worker device missing"))?;
+            let addr = if d.is_local {
+                // The laptop worker binds to the host phone's link address (N2/H2).
+                host.link_local_addr
+                    .clone()
+                    .unwrap_or_else(|| "127.0.0.1".into())
+            } else {
+                d.addr.clone().unwrap_or_default()
+            };
+            workers.push((addr, d.rpc_port));
+            layer_counts.push(p.layer_end - p.layer_start);
+        }
     }
     let (args, ngl) = derive_args(
         &st.models_dir.join(&model.file).display().to_string(),
@@ -120,7 +143,7 @@ pub fn llama_args(st: &AppState, plan: &Plan) -> anyhow::Result<LlamaArgs> {
     Ok(LlamaArgs {
         program: st.llama_bin.join("llama-server").display().to_string(),
         args,
-        host_is_local: host.is_local,
+        host_is_local,
         workers,
         ngl,
     })
@@ -155,23 +178,11 @@ fn set_error(st: &AppState, msg: &str) {
     r.error = Some(msg.to_string());
 }
 
-/// Start the plan. Order (M3): stop the previous run → push to workers → wait until every remote
-/// worker reports its RPC port listening for *this* plan id → TCP-check every worker → start the
-/// host (local llama-server, or push the plan to the phone host). Any failure tears down what
-/// was started. Callers hold `st.run_lock`.
+/// Record the plan and launch the background bring-up task. Returns immediately (status
+/// `starting`). Callers hold `st.run_lock` only across this call.
 pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
     stop(&st).await;
-    match start_inner(st.clone(), plan).await {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            set_error(&st, &format!("start failed: {e}"));
-            stop_processes(&st).await;
-            Err(e)
-        }
-    }
-}
-
-async fn start_inner(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
+    let gen = st.run_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let plan_id = format!("plan-{}", now_ms());
     st.set_roles_from_plan(&plan);
     *st.plan.write().unwrap() = Some(plan.clone());
@@ -186,26 +197,52 @@ async fn start_inner(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
             ..Default::default()
         };
     }
+    let la = llama_args(&st, &plan)?; // fail fast on a broken plan
+    st.run.write().unwrap().args = std::iter::once(la.program.clone())
+        .chain(la.args.iter().cloned())
+        .collect();
     tracing::info!(
-        "start {plan_id}: {} mode {:?} host {}",
+        "start {plan_id} gen {gen}: {} mode {:?} host {}",
         plan.model,
         plan.mode,
         plan.host_id
     );
-    let la = llama_args(&st, &plan)?;
-    st.run.write().unwrap().args = std::iter::once(la.program.clone())
-        .chain(la.args.iter().cloned())
-        .collect();
+    let st2 = st.clone();
+    tokio::spawn(async move {
+        if let Err(e) = bring_up(st2.clone(), plan, plan_id, gen, la).await {
+            if st2.gen() == gen {
+                set_error(&st2, &format!("start failed: {e}"));
+                withdraw_and_kill(&st2).await;
+            } else {
+                tracing::info!("gen {gen} superseded: {e}");
+            }
+        }
+    });
+    Ok(())
+}
 
-    // Local worker (laptop as compute for a phone host): bind to the LAN address of this machine.
+macro_rules! bail_if_stale {
+    ($st:expr, $gen:expr) => {
+        if $st.gen() != $gen {
+            anyhow::bail!("cancelled");
+        }
+    };
+}
+
+async fn bring_up(
+    st: Arc<AppState>,
+    plan: Plan,
+    plan_id: String,
+    gen: u64,
+    la: LlamaArgs,
+) -> anyhow::Result<()> {
+    // Local worker (laptop as compute for a phone host): bind to our end of the host's link.
     if plan
         .placements
         .iter()
         .any(|p| p.role == Role::Worker && p.device_id == "local")
     {
-        let bind = local_ip_address::local_ip()
-            .map(|i| i.to_string())
-            .unwrap_or_else(|_| "127.0.0.1".into());
+        let bind = local_addr_for(&st, &plan.host_id);
         let child = spawn_rpc_server(&st.llama_bin, &bind, meshcore::RPC_PORT, None, true)?;
         st.push_log(format!(
             "local worker: ggml-rpc-server on {bind}:{} (pid {})",
@@ -213,10 +250,10 @@ async fn start_inner(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
             child.id().unwrap_or(0)
         ));
         *st.local_worker.lock().unwrap() = Some(child);
+        *st.local_worker_bind.lock().unwrap() = Some(bind);
     }
 
-    // Push the plan to remote *workers* first.
-    let pplan = to_proto(&st, &plan, &plan_id);
+    // Push the plan to remote *workers* first (each gets the laptop's address as it sees it).
     let remote_workers: Vec<String> = plan
         .placements
         .iter()
@@ -241,13 +278,16 @@ async fn start_inner(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
         }
     }
     for id in &remote_workers {
-        let _ = st.plan_tx.send((id.clone(), pplan.clone()));
+        let _ = st
+            .plan_tx
+            .send((id.clone(), to_proto(&st, &plan, &plan_id, id)));
     }
     // Remote phones report "worker listening" for this plan id (M2): a bare TCP probe is not
     // enough because adb/port forwards accept connections before anything listens behind them.
     for id in &remote_workers {
         let mut ok = false;
         for _ in 0..90 {
+            bail_if_stale!(st, gen);
             let ready = st
                 .devices
                 .read()
@@ -268,11 +308,11 @@ async fn start_inner(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
         }
     }
     // llama.cpp aborts the whole process if an RPC server is unreachable, so TCP-check every worker.
-    tracing::info!("start {plan_id}: checking {} worker(s)", la.workers.len());
     for (addr, port) in &la.workers {
         let target = format!("{addr}:{port}");
         let mut ok = false;
         for _ in 0..40 {
+            bail_if_stale!(st, gen);
             if tokio::time::timeout(
                 std::time::Duration::from_millis(500),
                 tokio::net::TcpStream::connect(&target),
@@ -292,6 +332,7 @@ async fn start_inner(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
             anyhow::bail!("worker {target} not reachable after 20 s — is its RPC server running on the paired link?");
         }
     }
+    bail_if_stale!(st, gen);
 
     if la.host_is_local {
         st.push_log(format!("host: {} {}", la.program, la.args.join(" ")));
@@ -327,28 +368,28 @@ async fn start_inner(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
         }
         // Watch the child for its whole life (H6): an exit after "ready" is an error, not silence.
         let st2 = st.clone();
-        let pid_here = child.id();
         tokio::spawn(async move {
             let status = child.wait().await;
-            let still_ours = *st2.host_pid.lock().unwrap() == pid_here;
-            if still_ours {
-                *st2.host_pid.lock().unwrap() = None;
-                let s = st2.run.read().unwrap().status.clone();
-                if s == "loading" || s == "ready" || s == "starting" {
-                    let msg = match status {
-                        Ok(c) => format!("llama-server exited ({c})"),
-                        Err(e) => format!("llama-server wait failed: {e}"),
-                    };
-                    set_error(&st2, &msg);
-                    stop_processes(&st2).await;
-                    st2.run.write().unwrap().endpoint = None;
-                }
+            if st2.gen() != gen {
+                return; // a newer run owns the state now
+            }
+            *st2.host_pid.lock().unwrap() = None;
+            let s = st2.run.read().unwrap().status.clone();
+            if s == "loading" || s == "ready" || s == "starting" {
+                let msg = match status {
+                    Ok(c) => format!("llama-server exited ({c})"),
+                    Err(e) => format!("llama-server wait failed: {e}"),
+                };
+                set_error(&st2, &msg);
+                withdraw_and_kill(&st2).await;
+                st2.run.write().unwrap().endpoint = None;
             }
         });
         let st2 = st.clone();
         tokio::spawn(async move {
             wait_ready(
                 st2,
+                gen,
                 format!("http://127.0.0.1:{}", meshcore::HOST_LLAMA_PORT),
             )
             .await
@@ -358,7 +399,10 @@ async fn start_inner(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
         if let Some(dev) = st.devices.write().unwrap().get_mut(&plan.host_id) {
             dev.has_plan = true;
         }
-        let _ = st.plan_tx.send((plan.host_id.clone(), pplan.clone()));
+        let _ = st.plan_tx.send((
+            plan.host_id.clone(),
+            to_proto(&st, &plan, &plan_id, &plan.host_id),
+        ));
         let addr = st
             .devices
             .read()
@@ -373,16 +417,16 @@ async fn start_inner(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
         ));
         st.run.write().unwrap().status = "loading".into();
         let st2 = st.clone();
-        tokio::spawn(async move { wait_ready(st2, ep).await });
+        tokio::spawn(async move { wait_ready(st2, gen, ep).await });
     }
     Ok(())
 }
 
-async fn wait_ready(st: Arc<AppState>, endpoint: String) {
+async fn wait_ready(st: Arc<AppState>, gen: u64, endpoint: String) {
     let client = reqwest::Client::new();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20 * 60);
     loop {
-        if st.run.read().unwrap().status != "loading" {
+        if st.gen() != gen || st.run.read().unwrap().status != "loading" {
             return;
         }
         if let Ok(r) = client
@@ -393,7 +437,7 @@ async fn wait_ready(st: Arc<AppState>, endpoint: String) {
         {
             if r.status().is_success() {
                 let mut run = st.run.write().unwrap();
-                if run.status != "loading" {
+                if run.status != "loading" || st.gen() != gen {
                     return;
                 }
                 run.status = "ready".into();
@@ -442,11 +486,13 @@ async fn stop_processes(st: &Arc<AppState>) {
         let _ = c.start_kill();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(3), c.wait()).await;
     }
+    *st.local_worker_bind.lock().unwrap() = None;
 }
 
-pub async fn stop(st: &Arc<AppState>) {
+/// Withdraw the plan from every remote device that received one (they kill their processes) and
+/// kill ours. Used by stop, by the host watcher and by a failed bring-up (H6).
+async fn withdraw_and_kill(st: &Arc<AppState>) {
     stop_processes(st).await;
-    // Withdraw the plan from every remote device that received one (H2): they kill their processes.
     let ids: Vec<String> = st
         .devices
         .read()
@@ -470,6 +516,11 @@ pub async fn stop(st: &Arc<AppState>) {
         dev.has_plan = false;
         dev.worker_ready_plan = None;
     }
+}
+
+pub async fn stop(st: &Arc<AppState>) {
+    st.run_gen.fetch_add(1, Ordering::SeqCst); // cancels any bring-up / watcher of the old run
+    withdraw_and_kill(st).await;
     let mut r = st.run.write().unwrap();
     r.status = "idle".into();
     r.endpoint = None;
@@ -477,12 +528,16 @@ pub async fn stop(st: &Arc<AppState>) {
     *st.plan.write().unwrap() = None;
 }
 
-pub fn to_proto(st: &AppState, plan: &Plan, plan_id: &str) -> meshcore::proto::Plan {
+/// Plan as sent to `for_device`: the laptop's address is our end of *that* device's link.
+pub fn to_proto(
+    st: &AppState,
+    plan: &Plan,
+    plan_id: &str,
+    for_device: &str,
+) -> meshcore::proto::Plan {
     use meshcore::proto as p;
+    let my_ip = local_addr_for(st, for_device);
     let devices = st.devices.read().unwrap();
-    let my_ip = local_ip_address::local_ip()
-        .map(|i| i.to_string())
-        .unwrap_or_else(|_| "127.0.0.1".into());
     p::Plan {
         plan_id: plan_id.to_string(),
         model_name: plan.model.clone(),
