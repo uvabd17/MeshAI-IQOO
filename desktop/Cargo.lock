@@ -975,6 +975,7 @@ dependencies = [
  "mime_guess",
  "prost",
  "qrcode",
+ "rand",
  "reqwest",
  "serde",
  "serde_json",

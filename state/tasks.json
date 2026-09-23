@@ -220,7 +220,7 @@
       "blocked_by": [
         "T031"
       ],
-      "evidence": "rounds 1–3 acted on; round 3 asked for: laptop-side heartbeat proof (now a tokio test in control.rs), atomic generation checks (proc_lock), phone plan actor, planner device growth, phone-host guard + failure reports, Locale.ROOT, mirror name stripping, runs.jsonl untracked; round 4 pending"
+      "evidence": "rounds 1–4 acted on; round 4 (1 HIGH stale failure report, 5 MED, 6 LOW) fixed with 5 new control-plane tokio tests + HostArgsTest + live guard checks (V010–V012); round 5 pending"
     }
   ]
 }

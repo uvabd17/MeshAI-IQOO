@@ -167,6 +167,11 @@ pub struct AppState {
     pub local_worker_bind: Mutex<Option<String>>,
     pub sim_children: Mutex<Vec<tokio::process::Child>>, // simulated phones: live across runs
     pub plan_tx: tokio::sync::broadcast::Sender<(String, proto::Plan)>, // device_id -> plan to push
+    /// (device_id, conn_id): a session whose device now belongs to another conn_id closes itself;
+    /// conn_id 0 means "forgotten: send Bye and close" (round-4 #5, #8).
+    pub session_ctl: tokio::sync::broadcast::Sender<(String, u64)>,
+    /// Silence limit for the control plane; tests lower it (round-4 #8).
+    pub silence_limit_ms: AtomicU64,
     /// Serialises the *initiation* of start/stop; the long waits run in a task tagged with `run_gen`.
     pub run_lock: tokio::sync::Mutex<()>,
     /// Held across "check generation → spawn/register/kill a process or push a plan" so a stop can
@@ -224,6 +229,8 @@ impl AppState {
             local_worker_bind: Mutex::new(None),
             sim_children: Mutex::new(Vec::new()),
             plan_tx,
+            session_ctl: tokio::sync::broadcast::channel(64).0,
+            silence_limit_ms: AtomicU64::new(crate::control::SILENCE_LIMIT_MS),
             run_lock: tokio::sync::Mutex::new(()),
             proc_lock: tokio::sync::Mutex::new(()),
             run_gen: AtomicU64::new(0),

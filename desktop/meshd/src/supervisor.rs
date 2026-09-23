@@ -260,7 +260,7 @@ async fn fail_if_current(st: &Arc<AppState>, gen: u64, msg: &str) {
 
 /// A device reported that its process died or that it refused the plan: end the current run if
 /// that device is part of it (round-3 #2).
-pub async fn fail_run_from_device(st: &Arc<AppState>, device_id: &str, why: &str) {
+pub async fn fail_run_from_device(st: &Arc<AppState>, device_id: &str, plan_id: &str, why: &str) {
     let gen = st.gen();
     let involved = st
         .devices
@@ -269,9 +269,40 @@ pub async fn fail_run_from_device(st: &Arc<AppState>, device_id: &str, why: &str
         .get(device_id)
         .map(|d| d.has_plan)
         .unwrap_or(false);
-    if involved {
-        fail_if_current(st, gen, &format!("device {device_id}: {why}")).await;
+    // A report is only honoured for the plan it belongs to: a stale "download cancelled" from the
+    // run we just superseded must never kill the new one (round-4 #1).
+    let current = st.run.read().unwrap().plan_id.clone();
+    if !involved || current.as_deref() != Some(plan_id) {
+        tracing::info!(
+            "ignoring failure report from {device_id} for plan {plan_id:?} (current {current:?}, in run: {involved}): {why}"
+        );
+        return;
     }
+    fail_if_current(st, gen, &format!("device {device_id}: {why}")).await;
+}
+
+/// Forget a device (admin action): if it is part of the current run, end the run; tell its live
+/// session to say Bye and close; drop it from the device table and the pairing book (round-4 #5).
+pub async fn forget_device(st: &Arc<AppState>, id: &str) {
+    let _g = st.run_lock.lock().await;
+    let in_run = st
+        .devices
+        .read()
+        .unwrap()
+        .get(id)
+        .map(|d| d.has_plan || d.role == "host" || d.role == "worker")
+        .unwrap_or(false);
+    if in_run {
+        st.push_log(format!("device {id} forgotten during the run — stopping"));
+        stop(st).await;
+        let mut r = st.run.write().unwrap();
+        r.status = "error".into();
+        r.error = Some(format!("device {id} was forgotten"));
+    }
+    let _ = st.session_ctl.send((id.to_string(), 0));
+    st.devices.write().unwrap().remove(id);
+    st.pairing.lock().unwrap().forget(id);
+    st.save_paired();
 }
 
 async fn bring_up(
@@ -388,11 +419,11 @@ async fn bring_up(
                 .spawn()
                 .map_err(|e| anyhow::anyhow!("spawn llama-server: {e}"))?;
             *st.host_pid.lock().unwrap() = child.id();
+            st.run.write().unwrap().status = "loading".into(); // inside the lock (round-4 #7)
             child
         };
         let stderr = child.stderr.take();
         let stdout = child.stdout.take();
-        st.run.write().unwrap().status = "loading".into();
         for pipe in [
             stdout.map(|p| Box::pin(p) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>),
             stderr.map(|p| Box::pin(p) as _),
@@ -451,6 +482,7 @@ async fn bring_up(
                 &plan.host_id,
                 to_proto(&st, &plan, &plan_id, &plan.host_id),
             );
+            st.run.write().unwrap().status = "loading".into(); // inside the lock (round-4 #7)
         }
         let addr = st
             .devices
@@ -464,7 +496,6 @@ async fn bring_up(
             "host is remote ({}): plan pushed, waiting for {ep}/health",
             plan.host_id
         ));
-        st.run.write().unwrap().status = "loading".into();
         let st2 = st.clone();
         tokio::spawn(async move { wait_ready(st2, gen, ep).await });
     }
