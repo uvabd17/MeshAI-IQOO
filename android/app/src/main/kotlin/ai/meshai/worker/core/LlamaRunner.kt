@@ -17,7 +17,8 @@ import java.util.concurrent.TimeUnit
 class LlamaRunner(private val ctx: Context) {
     private val libDir = File(ctx.applicationInfo.nativeLibraryDir)
     private val gate = ProcessGate()
-    private var proc: Process? = null
+    /** Assigned and killed only under the gate lock (round-7 #3). */
+    @Volatile private var proc: Process? = null
     /** (role, planId the process was started for, exit code) — only for the process we still own. */
     var onExit: ((role: String, planId: String, code: Int) -> Unit)? = null
     enum class Start { STARTED, REFUSED, FAILED }
@@ -47,15 +48,15 @@ class LlamaRunner(private val ctx: Context) {
                 pb.environment()["LD_LIBRARY_PATH"] = libDir.path
                 pb.environment()["HOME"] = ctx.filesDir.path
                 pb.directory(ctx.filesDir)
-                pb.start()
+                pb.start().also { proc = it } // published under the lock: a concurrent stop sees it
             }
         } ?: run { MeshState.log("✗ $newRole start refused: stopped (or link lost) before it could begin"); return Start.REFUSED }
         val (myGen, result) = started
         val p = result.getOrElse { e ->
+            gate.spawnFailed()
             MeshState.log("✗ start failed: ${e.message}"); MeshState.set { s -> s.copy(lastError = e.message) }
             return Start.FAILED
         }
-        proc = p
         MeshState.set { it.copy(processRunning = true, lastError = null) }
         MeshState.log("▶ ${cmd.drop(1).joinToString(" ")}")
         Thread {
@@ -69,8 +70,7 @@ class LlamaRunner(private val ctx: Context) {
 
     /** Stop and disarm. Returns the (role, planId) that was running, so the caller can report it. */
     fun stop(): Pair<String, String>? {
-        val had = gate.disarm() // any exit callback of the old process is now stale
-        killProcess()
+        val had = gate.disarm { killProcess() } // under the gate lock; any exit callback of the old process is now stale
         MeshState.set { it.copy(processRunning = false) }
         return had
     }

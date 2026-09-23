@@ -220,7 +220,7 @@
       "blocked_by": [
         "T031"
       ],
-      "evidence": "rounds 1–6 acted on; round 6 (api_run dry-run/ordering, re-send vs stop race, phone user-stop, invented timestamps) fixed with 2 more tokio tests (11 control) + ProcessGateTest; round 7 pending"
+      "evidence": "rounds 1–7 acted on; round 7 (phone stop report, shortfall gate, spawn/kill lock) fixed with gate unit tests + 5 more JVM tests + a scripted shortfall guard; round 8 pending"
     }
   ]
 }

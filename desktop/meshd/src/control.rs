@@ -36,10 +36,12 @@ impl PreauthPool {
     /// Take a slot for `ip`; `false` if the pool or that address is full.
     fn acquire(&self, ip: std::net::IpAddr) -> bool {
         let mut m = self.per_ip.lock().unwrap();
-        let n = m.entry(ip).or_insert(0);
-        if *n >= MAX_PREAUTH_PER_IP || self.total.load(Ordering::SeqCst) >= MAX_PREAUTH {
-            return false;
+        if self.total.load(Ordering::SeqCst) >= MAX_PREAUTH
+            || m.get(&ip).copied().unwrap_or(0) >= MAX_PREAUTH_PER_IP
+        {
+            return false; // no entry is inserted for a refused address (round-7 #4)
         }
+        let n = m.entry(ip).or_insert(0);
         *n += 1;
         self.total.fetch_add(1, Ordering::SeqCst);
         true
@@ -628,6 +630,19 @@ mod tests {
         .await
         .expect("the 5th pre-auth socket from one address must be dropped at once");
         assert!(closed.is_none());
+        // A different source address still gets in while 127.0.0.1 is saturated (per-IP, not global).
+        let other = tokio::net::TcpSocket::new_v4().unwrap();
+        other.bind("127.0.0.2:0".parse().unwrap()).unwrap();
+        let mut from_other = other.connect(([127, 0, 0, 1], port).into()).await.unwrap();
+        let r = tokio::time::timeout(
+            std::time::Duration::from_millis(800),
+            try_read_env(&mut from_other, &mut b),
+        )
+        .await;
+        assert!(
+            r.is_err(),
+            "a second address must not be blocked by the first one's pre-auth sockets, got {r:?}"
+        );
         drop(silent); // slots are released when the unpaired sockets close
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let mut again = TcpStream::connect(("127.0.0.1", port)).await.unwrap();

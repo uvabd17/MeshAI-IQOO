@@ -28,13 +28,20 @@ class ProcessGate {
         gen to v
     }
 
-    /** Stop: disarms and invalidates the current generation. Returns the (role, planId) that was running, if any. */
-    fun disarm(): Pair<String, String>? = synchronized(lock) {
+    /**
+     * Stop: disarms and invalidates the current generation, running [kill] under the same lock as [tryStart] so a
+     * process that was just spawned can never be missed (round-7 #3). Returns the (role, planId) that was running.
+     */
+    fun disarm(kill: () -> Unit = {}): Pair<String, String>? = synchronized(lock) {
         armed = false; gen++
         val had = if (currentRole.isEmpty()) null else currentRole to currentPlanId
         currentRole = ""; currentPlanId = ""
+        kill()
         had
     }
+
+    /** A spawn that failed leaves nothing to own or report. */
+    fun spawnFailed() = synchronized(lock) { currentRole = ""; currentPlanId = "" }
 
     fun isCurrent(g: Int) = synchronized(lock) { g == gen }
     val isArmed: Boolean get() = synchronized(lock) { armed }
