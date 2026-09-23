@@ -1,0 +1,7 @@
+third_party/
+*.gguf
+build*/
+.gradle/
+local.properties
+target/
+node_modules/
