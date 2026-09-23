@@ -27,8 +27,11 @@ data class UiState(
     val cpusAllowed: String = "?",
     val threads: Int = 0,
     val decodeTps: Float = 0f,
+    val tier: String = "",
     val log: List<String> = emptyList(),
     val lastError: String? = null,
+    /** A pairing payload that arrived from another app / adb and awaits the user's confirmation (M9). */
+    val pendingJoin: PairingPayload? = null,
 )
 
 object MeshState {

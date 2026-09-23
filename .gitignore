@@ -1,8 +1,12 @@
-third_party/
 *.gguf
-build*/
 .gradle/
+android/.gradle/
+android/.kotlin/
+android/app/build/
+android/build/
+build*/
 local.properties
-target/
 node_modules/
 state/.cache/
+target/
+third_party/

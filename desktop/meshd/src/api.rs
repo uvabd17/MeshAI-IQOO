@@ -1,10 +1,16 @@
 //! JSON API for the admin panel + static admin files + /v1 proxy.
+//!
+//! Exposure (C1): binds to 127.0.0.1 unless `--lan`; with `--lan` an API token is mandatory and
+//! every mutating route, `/v1` and the pairing offer require it (`x-mesh-token` header or
+//! `Authorization: Bearer`). No CORS layer: the admin is same-origin. Model files are readable
+//! without a token so a phone host can fetch them over the paired link.
 
 use crate::models;
-use crate::state::{AppState, Device};
+use crate::state::AppState;
 use crate::supervisor;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
 use axum::http::{header, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -14,18 +20,19 @@ use std::sync::Arc;
 
 static ADMIN: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../admin/src");
 
-pub async fn serve(st: Arc<AppState>, port: u16) -> anyhow::Result<()> {
-    let app = Router::new()
+/// Full coordinator router.
+pub fn router(st: Arc<AppState>) -> Router {
+    Router::new()
         .route("/", get(|| async { Redirect::temporary("/admin/") }))
         .route("/admin", get(|| async { Redirect::temporary("/admin/") }))
         .route("/admin/", get(admin_index))
         .route("/admin/{*path}", get(admin_static))
         .route("/api/state", get(api_state))
-        .route("/api/relay/state", post(api_relay_state))
         .route("/api/catalog", get(api_catalog))
+        .route("/api/runs", get(api_runs))
+        .route("/api/models/file/{file}", get(api_model_file))
         .route("/api/models/rescan", post(api_rescan))
         .route("/api/models/download", post(api_download))
-        .route("/api/models/file/{file}", get(api_model_file))
         .route("/api/pair/offer", post(api_offer))
         .route("/api/plan", post(api_plan))
         .route("/api/run", post(api_run))
@@ -33,34 +40,110 @@ pub async fn serve(st: Arc<AppState>, port: u16) -> anyhow::Result<()> {
         .route("/api/devices/{id}", delete(api_forget))
         .route("/api/devices/{id}/limit", post(api_limit))
         .route("/api/sim/workers", post(api_sim_workers))
-        .route("/api/runs", get(api_runs))
         .route("/api/bench", post(api_bench))
         .route("/v1/{*rest}", axum::routing::any(crate::proxy::v1))
-        .layer(tower_http::cors::CorsLayer::permissive())
-        .with_state(st.clone());
-    let l = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
-    // periodic local refresh + offline detection
-    let st2 = st.clone();
-    tokio::spawn(async move {
-        loop {
-            st2.refresh_local_profile();
-            let now = crate::state::now_ms();
-            {
-                let mut d = st2.devices.write().unwrap();
-                for dev in d.values_mut() {
-                    if !dev.is_local
-                        && dev.kind != crate::state::DeviceKind::Sim
-                        && now.saturating_sub(dev.last_seen_ms) > 30_000
-                    {
-                        dev.online = false;
+        .layer(middleware::from_fn_with_state(st.clone(), auth))
+        .with_state(st)
+}
+
+/// Mirror router (C3): read-only admin + the relay ingress. Nothing else exists on the cloud box.
+pub fn mirror_router(st: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/", get(|| async { Redirect::temporary("/admin/") }))
+        .route("/admin", get(|| async { Redirect::temporary("/admin/") }))
+        .route("/admin/", get(admin_index))
+        .route("/admin/{*path}", get(admin_static))
+        .route("/api/state", get(api_state))
+        .route("/api/catalog", get(api_catalog))
+        .route("/api/runs", get(api_runs))
+        .route("/api/relay/state", post(api_relay_state))
+        .with_state(st)
+}
+
+pub async fn serve(st: Arc<AppState>, port: u16, mirror: bool) -> anyhow::Result<()> {
+    let bind = if st.lan || mirror {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    };
+    let app = if mirror {
+        mirror_router(st.clone())
+    } else {
+        router(st.clone())
+    };
+    let l = tokio::net::TcpListener::bind((bind, port)).await?;
+    tracing::info!(
+        "api/admin bound to {bind}:{port}{}",
+        if st.api_token.is_some() {
+            " (token required)"
+        } else {
+            ""
+        }
+    );
+    if !mirror {
+        let st2 = st.clone();
+        tokio::spawn(async move {
+            loop {
+                st2.refresh_local_profile();
+                let now = crate::state::now_ms();
+                {
+                    let mut d = st2.devices.write().unwrap();
+                    for dev in d.values_mut() {
+                        if !dev.is_local
+                            && dev.kind != crate::state::DeviceKind::Sim
+                            && now.saturating_sub(dev.last_seen_ms) > 30_000
+                        {
+                            dev.online = false;
+                        }
                     }
                 }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        }
-    });
+        });
+    }
     axum::serve(l, app).await?;
     Ok(())
+}
+
+fn presented_token(req: &Request) -> Option<String> {
+    if let Some(v) = req
+        .headers()
+        .get("x-mesh-token")
+        .and_then(|v| v.to_str().ok())
+    {
+        return Some(v.to_string());
+    }
+    req.headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|s| s.to_string())
+}
+
+/// Token check for everything that changes state or costs compute. Read-only GETs stay open.
+async fn auth(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    let Some(want) = st.api_token.as_deref() else {
+        return next.run(req).await;
+    };
+    let path = req.uri().path().to_string();
+    let is_get = req.method() == axum::http::Method::GET;
+    let open = path.starts_with("/admin")
+        || path == "/"
+        || (is_get
+            && (path == "/api/state"
+                || path == "/api/runs"
+                || path == "/api/catalog"
+                || path.starts_with("/api/models/file/")));
+    if open {
+        return next.run(req).await;
+    }
+    let ok = presented_token(&req)
+        .map(|t| meshcore::pairing::ct_eq(t.as_bytes(), want.as_bytes()))
+        .unwrap_or(false);
+    if !ok {
+        return (StatusCode::UNAUTHORIZED, "x-mesh-token required").into_response();
+    }
+    next.run(req).await
 }
 
 async fn admin_index() -> Response {
@@ -89,32 +172,6 @@ async fn admin_static(Path(path): Path<String>) -> Response {
     }
 }
 
-fn state_json(st: &AppState) -> serde_json::Value {
-    let devices: Vec<Device> = st.devices.read().unwrap().values().cloned().collect();
-    let dev_json: Vec<serde_json::Value> = devices
-        .iter()
-        .map(|d| {
-            let mut v = serde_json::to_value(d).unwrap();
-            v["usable_bytes"] = serde_json::json!(d.usable_bytes());
-            v
-        })
-        .collect();
-    let offer = st.offer.read().unwrap().clone();
-    serde_json::json!({
-        "mesh_id": st.mesh_id(),
-        "devices": dev_json,
-        "models": *st.models.read().unwrap(),
-        "plan": *st.plan.read().unwrap(),
-        "run": *st.run.read().unwrap(),
-        "downloads": *st.downloads.read().unwrap(),
-        "offer": offer.as_ref().map(|o| serde_json::json!({"payload": o.qr_payload(), "svg": crate::state::qr_svg(&o.qr_payload()), "host": o.host, "port": o.control_port})),
-        "policy": *st.policy.read().unwrap(),
-        "models_dir": st.models_dir,
-        "now_ms": crate::state::now_ms(),
-        "mirrored": false,
-    })
-}
-
 async fn api_state(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
     if st.mirror_token.read().unwrap().is_some() {
         let snap = st.mirror.read().unwrap().clone();
@@ -125,10 +182,10 @@ async fn api_state(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
             }
         });
     }
-    Json(state_json(&st))
+    Json(st.state_json(false))
 }
 
-/// Coordinator → mirror push. Body: {"state": <state json>, "runs": [...]}. Bearer token required.
+/// Coordinator → mirror push. Body: {"state": <stripped state>, "runs": [...]}. Bearer token required.
 async fn api_relay_state(
     State(st): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -143,8 +200,11 @@ async fn api_relay_state(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
-    if got != want {
+    if !meshcore::pairing::ct_eq(got.as_bytes(), want.as_bytes()) {
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    }
+    if body.to_string().len() > 2 << 20 {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "snapshot too large").into_response();
     }
     let mut s = body["state"].clone();
     s["mirrored"] = serde_json::json!(true);
@@ -153,13 +213,13 @@ async fn api_relay_state(
     Json(serde_json::json!({"ok": true})).into_response()
 }
 
-/// Coordinator side: push state + runs to the mirror every 2 s.
+/// Coordinator side: push a stripped snapshot + runs to the mirror every 2 s (D014).
 pub async fn push_loop(st: Arc<AppState>) {
     let client = reqwest::Client::new();
     loop {
         let cfg = st.push_to.read().unwrap().clone();
         if let Some((base, token)) = cfg {
-            let state = state_json(&st);
+            let state = st.state_json(true);
             let runs = serde_json::json!(*st.runs.read().unwrap());
             let r = client
                 .post(format!("{base}/api/relay/state"))
@@ -205,19 +265,19 @@ async fn api_download(State(st): State<Arc<AppState>>, Json(r): Json<DownloadReq
     };
     match models::start_download(st, url, file).await {
         Ok(()) => Json(serde_json::json!({"ok": true})).into_response(),
-        Err(e) => (StatusCode::CONFLICT, e.to_string()).into_response(),
+        Err(e) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response(),
     }
 }
 
 async fn api_model_file(State(st): State<Arc<AppState>>, Path(file): Path<String>) -> Response {
-    if file.contains('/') || file.contains("..") {
+    if !models::valid_model_name(&file) {
         return (StatusCode::BAD_REQUEST, "bad name").into_response();
     }
     let p = st.models_dir.join(&file);
     match tokio::fs::File::open(&p).await {
         Ok(f) => {
             let len = f.metadata().await.map(|m| m.len()).unwrap_or(0);
-            let stream = tokio_util_stream(f);
+            let stream = file_stream(f);
             (
                 [
                     (header::CONTENT_TYPE, "application/octet-stream".to_string()),
@@ -231,7 +291,7 @@ async fn api_model_file(State(st): State<Arc<AppState>>, Path(file): Path<String
     }
 }
 
-fn tokio_util_stream(
+fn file_stream(
     f: tokio::fs::File,
 ) -> impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> {
     futures_util::stream::unfold(f, |mut f| async move {
@@ -248,6 +308,8 @@ fn tokio_util_stream(
     })
 }
 
+/// The pairing offer is returned only here, to the (authenticated, local) admin that will render
+/// the QR. It is never part of `/api/state` (C2).
 async fn api_offer(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let o = st.new_offer(meshcore::CONTROL_PORT);
     Json(
@@ -280,7 +342,12 @@ async fn api_plan(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Re
     }
 }
 
+/// Serialised (M10) and planned *after* the previous run is stopped (M4), so the memory the old
+/// model held is not counted against the new plan.
 async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Response {
+    let _g = st.run_lock.lock().await;
+    supervisor::stop(&st).await;
+    st.refresh_local_profile();
     let plan = match st.make_plan(&r.model, r.n_ctx, r.host) {
         Ok(p) => p,
         Err(e) => {
@@ -302,6 +369,7 @@ async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Res
 }
 
 async fn api_stop(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let _g = st.run_lock.lock().await;
     supervisor::stop(&st).await;
     Json(serde_json::json!({"ok": true}))
 }
@@ -312,6 +380,7 @@ async fn api_forget(
 ) -> Json<serde_json::Value> {
     st.devices.write().unwrap().remove(&id);
     st.pairing.lock().unwrap().forget(&id);
+    st.save_paired();
     Json(serde_json::json!({"ok": true}))
 }
 
@@ -347,7 +416,9 @@ fn default_sim_gb() -> f64 {
     8.5
 }
 async fn api_sim_workers(State(st): State<Arc<AppState>>, Json(r): Json<SimReq>) -> Response {
-    // remove old sims
+    if r.n > 4 {
+        return (StatusCode::BAD_REQUEST, "at most 4 simulated phones").into_response();
+    }
     {
         let mut d = st.devices.write().unwrap();
         d.retain(|_, v| v.kind != crate::state::DeviceKind::Sim);
@@ -406,7 +477,7 @@ struct BenchReq {
 fn default_threads() -> usize {
     4
 }
-/// Quick local llama-bench (pp128/tg32) for the laptop's bench_tps. Blocking but short.
+/// Quick local llama-bench (pp128/tg32) for the laptop's bench_tps.
 async fn api_bench(State(st): State<Arc<AppState>>, Json(r): Json<BenchReq>) -> Response {
     let m = match st.model(&r.model) {
         Some(m) => m,
@@ -419,7 +490,7 @@ async fn api_bench(State(st): State<Arc<AppState>>, Json(r): Json<BenchReq>) -> 
             "-m",
             &path.display().to_string(),
             "-t",
-            &r.threads.to_string(),
+            &r.threads.min(64).to_string(),
             "-p",
             "128",
             "-n",

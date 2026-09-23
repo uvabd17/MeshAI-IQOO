@@ -47,10 +47,11 @@ import androidx.compose.ui.unit.sp
 private fun gb(b: Long) = "%.1f GB".format(b / 1e9)
 
 @Composable
-fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onLeave: () -> Unit, onStop: () -> Unit, onBench: () -> Unit) {
+fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfirmJoin: (ai.meshai.worker.core.PairingPayload) -> Unit, onRejectJoin: () -> Unit, onLeave: () -> Unit, onStop: () -> Unit, onBench: () -> Unit) {
     val c = MaterialTheme.colorScheme
     LazyColumn(Modifier.background(c.background).padding(horizontal = 18.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 22.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { Header(s) }
+        s.pendingJoin?.let { p -> item { PendingJoinCard(p, onConfirmJoin, onRejectJoin) } }
         if (!s.paired) item { JoinCard(onScan, onJoin, s.lastError) }
         else item { RoleCard(s, onLeave, onStop) }
         item { MetricsGrid(s) }
@@ -94,6 +95,20 @@ fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onLeave:
             OutlinedTextField(value = payload, onValueChange = { payload = it }, modifier = Modifier.fillMaxWidth(), label = { Text("or paste the pairing payload") }, maxLines = 3)
             OutlinedButton(onClick = { onJoin(payload) }, modifier = Modifier.fillMaxWidth(), enabled = payload.contains("token")) { Text("Join") }
             if (err != null) Text("✗ $err", fontSize = 12.sp, color = c.onBackground)
+        }
+    }
+}
+
+@Composable private fun PendingJoinCard(p: ai.meshai.worker.core.PairingPayload, onConfirm: (ai.meshai.worker.core.PairingPayload) -> Unit, onReject: () -> Unit) {
+    val c = MaterialTheme.colorScheme
+    Card {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Label("PAIRING REQUEST")
+            Text("Another app asked this phone to join ${p.meshId} at ${p.host}:${p.controlPort}. Only accept if that is your own laptop.", fontSize = 13.sp, color = c.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { onConfirm(p) }, colors = ButtonDefaults.buttonColors(containerColor = c.primary, contentColor = c.onPrimary)) { Text("Join") }
+                OutlinedButton(onClick = onReject) { Text("Ignore") }
+            }
         }
     }
 }

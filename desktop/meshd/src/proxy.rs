@@ -10,15 +10,21 @@ use futures_util::StreamExt;
 use std::sync::Arc;
 
 pub async fn v1(State(st): State<Arc<AppState>>, req: Request) -> Response {
-    let endpoint = match st.run.read().unwrap().endpoint.clone() {
-        Some(e) if st.run.read().unwrap().status == "ready" => e,
-        _ => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "no model is running — start one in the admin panel",
-            )
-                .into_response()
+    // One guard (M1): taking a second read lock in a match guard can deadlock against a writer.
+    let endpoint = {
+        let run = st.run.read().unwrap();
+        if run.status == "ready" {
+            run.endpoint.clone()
+        } else {
+            None
         }
+    };
+    let Some(endpoint) = endpoint else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no model is running — start one in the admin panel",
+        )
+            .into_response();
     };
     let path_q = req
         .uri()
@@ -41,7 +47,7 @@ pub async fn v1(State(st): State<Arc<AppState>>, req: Request) -> Response {
     let client = reqwest::Client::new();
     let mut rb = client.request(method, &url);
     for (k, v) in headers.iter() {
-        if k != "host" && k != "content-length" {
+        if k != "host" && k != "content-length" && k != "authorization" && k != "x-mesh-token" {
             rb = rb.header(k, v);
         }
     }
@@ -86,53 +92,68 @@ pub async fn v1(State(st): State<Arc<AppState>>, req: Request) -> Response {
         let mut tokens = 0u32;
         let mut prompt_tokens = 0u32;
         let mut usage_prompt_tps = 0f32;
+        let mut carry = String::new(); // SSE events can straddle TCP chunks (M6)
+        let mut done = false;
         let stream = resp.bytes_stream().map(move |chunk| {
             if let Ok(c) = &chunk {
                 if first.is_none() && c.iter().any(|b| !b.is_ascii_whitespace()) {
                     first = Some(t0.elapsed().as_millis() as u64);
                 }
-                let s = String::from_utf8_lossy(c);
-                for line in s.lines() {
-                    if let Some(json) = line.strip_prefix("data: ") {
-                        if json.trim() == "[DONE]" {
-                            let total = t0.elapsed().as_millis() as u64;
-                            let ttft = first.unwrap_or(total);
-                            let gen_ms = total.saturating_sub(ttft).max(1);
-                            let row = RunRow {
-                                ts_ms: now_ms(),
-                                model: model.clone(),
-                                mode: mode.clone(),
-                                host: host.clone(),
-                                devices: ndev,
-                                ttft_ms: ttft,
-                                total_ms: total,
-                                tokens_out: tokens,
-                                prompt_tokens,
-                                tps: tokens as f32 * 1000.0 / gen_ms as f32,
-                                prompt_tps: usage_prompt_tps,
-                                ok: true,
-                            };
-                            st2.record_run(row);
-                        } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
-                            let d = &v["choices"][0]["delta"];
-                            if d["content"].is_string()
-                                || d["reasoning_content"].is_string()
-                                || v["choices"][0]["text"].is_string()
-                            {
-                                tokens += 1;
-                            }
-                            if let Some(u) = v.get("usage") {
-                                prompt_tokens = u["prompt_tokens"].as_u64().unwrap_or(0) as u32;
-                                if let Some(ct) = u["completion_tokens"].as_u64() {
-                                    if ct > 0 {
-                                        tokens = ct as u32;
-                                    }
+                carry.push_str(&String::from_utf8_lossy(c));
+                while let Some(nl) = carry.find('\n') {
+                    let line = carry[..nl].trim_end_matches('\r').to_string();
+                    carry.drain(..=nl);
+                    let Some(json) = line.strip_prefix("data: ") else {
+                        continue;
+                    };
+                    if json.trim() == "[DONE]" {
+                        if done {
+                            continue;
+                        }
+                        done = true;
+                        let total = t0.elapsed().as_millis() as u64;
+                        let ttft = first.unwrap_or(total);
+                        let gen_ms = total.saturating_sub(ttft).max(1);
+                        // n tokens span n-1 inter-token intervals after the first.
+                        let tps = if tokens > 1 {
+                            (tokens - 1) as f32 * 1000.0 / gen_ms as f32
+                        } else {
+                            0.0
+                        };
+                        st2.record_run(RunRow {
+                            ts_ms: now_ms(),
+                            model: model.clone(),
+                            mode: mode.clone(),
+                            host: host.clone(),
+                            devices: ndev,
+                            ttft_ms: ttft,
+                            total_ms: total,
+                            tokens_out: tokens,
+                            prompt_tokens,
+                            tps,
+                            prompt_tps: usage_prompt_tps,
+                            ok: true,
+                            streaming: true,
+                        });
+                    } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+                        let d = &v["choices"][0]["delta"];
+                        if d["content"].is_string()
+                            || d["reasoning_content"].is_string()
+                            || v["choices"][0]["text"].is_string()
+                        {
+                            tokens += 1;
+                        }
+                        if let Some(u) = v.get("usage") {
+                            prompt_tokens = u["prompt_tokens"].as_u64().unwrap_or(0) as u32;
+                            if let Some(ct) = u["completion_tokens"].as_u64() {
+                                if ct > 0 {
+                                    tokens = ct as u32;
                                 }
                             }
-                            if let Some(t) = v.get("timings") {
-                                if let Some(p) = t["prompt_per_second"].as_f64() {
-                                    usage_prompt_tps = p as f32;
-                                }
+                        }
+                        if let Some(t) = v.get("timings") {
+                            if let Some(p) = t["prompt_per_second"].as_f64() {
+                                usage_prompt_tps = p as f32;
                             }
                         }
                     }
@@ -168,6 +189,7 @@ pub async fn v1(State(st): State<Arc<AppState>>, req: Request) -> Response {
         tps,
         prompt_tps,
         ok: status.is_success(),
+        streaming: false,
     });
     (status, out_headers, bytes).into_response()
 }

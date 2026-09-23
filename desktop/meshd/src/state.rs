@@ -1,16 +1,18 @@
-//! In-memory mesh state: devices, models, plan, run, downloads, timing rows.
+//! In-memory mesh state: devices, models, plan, run, downloads, timing rows, pairing persistence.
 
 use meshcore::gguf::ModelInfo;
-use meshcore::pairing::{PairingBook, PairingOffer};
+use meshcore::pairing::{PairedDevice, PairingBook, PairingOffer};
 use meshcore::planner::{self, DeviceCap, Plan, Policy};
 use meshcore::proto;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const HEADROOM_BYTES: u64 = 2_000_000_000; // 2 GB reserve on every device until Phase 0 measures the real kill line
+/// Reserve on every device until Phase 0 measures the real kill line (D016).
+pub const HEADROOM_BYTES: u64 = 2_000_000_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DeviceKind {
@@ -34,9 +36,12 @@ pub struct Device {
     pub usable_override_bytes: Option<u64>,
     pub last_seen_ms: u64,
     pub bench_tps: f32,
-    /// Remote worker has reported its RPC port is accepting connections (cleared on every plan push).
+    /// Plan id for which this remote worker reported "RPC port accepting connections".
     #[serde(default)]
-    pub worker_ready: bool,
+    pub worker_ready_plan: Option<String>,
+    /// A plan was pushed to this device and not yet withdrawn (it may have a process running).
+    #[serde(default)]
+    pub has_plan: bool,
 }
 
 impl Device {
@@ -84,6 +89,7 @@ pub struct RunStatus {
     pub status: String, // idle | starting | loading | ready | error | stopping
     pub host_id: Option<String>,
     pub model: Option<String>,
+    pub plan_id: Option<String>,
     pub started_ms: Option<u64>,
     pub ready_ms: Option<u64>,
     pub endpoint: Option<String>,
@@ -110,6 +116,7 @@ pub struct RunRow {
     pub mode: String,
     pub host: String,
     pub devices: usize,
+    /// Streaming: client-observed time to first token. Non-streaming: llama.cpp prompt_ms.
     pub ttft_ms: u64,
     pub total_ms: u64,
     pub tokens_out: u32,
@@ -117,12 +124,16 @@ pub struct RunRow {
     pub tps: f32,
     pub prompt_tps: f32,
     pub ok: bool,
+    #[serde(default)]
+    pub streaming: bool,
 }
 
 pub struct AppState {
     pub models_dir: PathBuf,
     pub llama_bin: PathBuf,
     pub state_dir: PathBuf,
+    pub lan: bool,
+    pub api_token: Option<String>,
     pub devices: RwLock<BTreeMap<String, Device>>,
     pub models: RwLock<Vec<ModelEntry>>,
     pub plan: RwLock<Option<Plan>>,
@@ -130,16 +141,19 @@ pub struct AppState {
     pub downloads: RwLock<Vec<Download>>,
     pub runs: RwLock<Vec<RunRow>>,
     pub pairing: Mutex<PairingBook>,
-    pub offer: RwLock<Option<PairingOffer>>,
+    pub offer: RwLock<Option<PairingOffer>>, // kept only to render the QR locally; never in state_json
     pub policy: RwLock<Policy>,
-    pub child: Mutex<Option<tokio::process::Child>>,
-    pub sim_children: Mutex<Vec<tokio::process::Child>>, // simulated phones: live across runs
-    pub local_worker: Mutex<Option<tokio::process::Child>>, // laptop-as-worker for a phone host: per run
+    /// pid of the host llama-server child (owned by its watcher task).
+    pub host_pid: Mutex<Option<u32>>,
+    pub local_worker: Mutex<Option<tokio::process::Child>>, // laptop-as-worker for a phone host
+    pub sim_children: Mutex<Vec<tokio::process::Child>>,    // simulated phones: live across runs
     pub plan_tx: tokio::sync::broadcast::Sender<(String, proto::Plan)>, // device_id -> plan to push
-    /// Mirror mode: the last state/runs snapshot pushed by a coordinator (cloud instance serves it read-only).
+    /// Serialises start/stop so two `/api/run` calls cannot interleave.
+    pub run_lock: tokio::sync::Mutex<()>,
+    /// Mirror mode: the last (state, runs) snapshot pushed by a coordinator.
     pub mirror: RwLock<Option<(serde_json::Value, serde_json::Value)>>,
     pub mirror_token: RwLock<Option<String>>,
-    pub push_to: RwLock<Option<(String, String)>>, // (base url, token) when this coordinator mirrors itself to a cloud meshd
+    pub push_to: RwLock<Option<(String, String)>>, // (base url, token)
 }
 
 pub fn now_ms() -> u64 {
@@ -150,7 +164,13 @@ pub fn now_ms() -> u64 {
 }
 
 impl AppState {
-    pub fn new(models_dir: PathBuf, llama_bin: PathBuf, state_dir: PathBuf) -> Self {
+    pub fn new(
+        models_dir: PathBuf,
+        llama_bin: PathBuf,
+        state_dir: PathBuf,
+        lan: bool,
+        api_token: Option<String>,
+    ) -> Self {
         let (plan_tx, _) = tokio::sync::broadcast::channel(16);
         let mesh_id = format!(
             "mesh-{}",
@@ -160,6 +180,8 @@ impl AppState {
             models_dir,
             llama_bin,
             state_dir,
+            lan,
+            api_token,
             devices: RwLock::new(BTreeMap::new()),
             models: RwLock::new(Vec::new()),
             plan: RwLock::new(None),
@@ -172,15 +194,17 @@ impl AppState {
             pairing: Mutex::new(PairingBook::new(mesh_id)),
             offer: RwLock::new(None),
             policy: RwLock::new(Policy::default()),
-            child: Mutex::new(None),
-            sim_children: Mutex::new(Vec::new()),
+            host_pid: Mutex::new(None),
             local_worker: Mutex::new(None),
+            sim_children: Mutex::new(Vec::new()),
             plan_tx,
+            run_lock: tokio::sync::Mutex::new(()),
             mirror: RwLock::new(None),
             mirror_token: RwLock::new(None),
             push_to: RwLock::new(None),
         };
         s.load_runs();
+        s.load_paired();
         s
     }
 
@@ -251,7 +275,8 @@ impl AppState {
             usable_override_bytes: None,
             last_seen_ms: now_ms(),
             bench_tps: 0.0,
-            worker_ready: false,
+            worker_ready_plan: None,
+            has_plan: false,
         });
         e.profile = Some(profile);
         e.telemetry = Some(telemetry);
@@ -284,7 +309,8 @@ impl AppState {
                 usable_override_bytes: Some(usable),
                 last_seen_ms: now_ms(),
                 bench_tps: 0.0,
-                worker_ready: true, // sims are spawned by us and checked over TCP
+                worker_ready_plan: None,
+                has_plan: false,
             },
         );
     }
@@ -298,7 +324,6 @@ impl AppState {
                 if p.extension().and_then(|s| s.to_str()) != Some("gguf") {
                     continue;
                 }
-                // skip files still being downloaded
                 let file = p.file_name().unwrap().to_string_lossy().to_string();
                 if self
                     .downloads
@@ -319,7 +344,7 @@ impl AppState {
                 }
             }
         }
-        out.sort_by(|a, b| a.info.file_bytes.cmp(&b.info.file_bytes));
+        out.sort_by_key(|m| m.info.file_bytes);
         *self.models.write().unwrap() = out;
     }
 
@@ -340,6 +365,24 @@ impl AppState {
         let o = self.pairing.lock().unwrap().offer(&ip, control_port);
         *self.offer.write().unwrap() = Some(o.clone());
         o
+    }
+
+    fn paired_path(&self) -> PathBuf {
+        self.state_dir.join("paired.json")
+    }
+    pub fn save_paired(&self) {
+        let list: Vec<PairedDevice> = self.pairing.lock().unwrap().export();
+        let _ = std::fs::create_dir_all(&self.state_dir);
+        if let Ok(s) = serde_json::to_string_pretty(&list) {
+            let _ = std::fs::write(self.paired_path(), s);
+        }
+    }
+    fn load_paired(&self) {
+        if let Ok(s) = std::fs::read_to_string(self.paired_path()) {
+            if let Ok(list) = serde_json::from_str::<Vec<PairedDevice>>(&s) {
+                self.pairing.lock().unwrap().import(list);
+            }
+        }
     }
 
     // ---------- planning ----------
@@ -420,11 +463,79 @@ impl AppState {
     pub fn push_log(&self, line: String) {
         let mut r = self.run.write().unwrap();
         r.log_tail.push(line);
-        if r.log_tail.len() > 60 {
-            let n = r.log_tail.len() - 60;
+        if r.log_tail.len() > 80 {
+            let n = r.log_tail.len() - 80;
             r.log_tail.drain(..n);
         }
     }
+
+    /// The JSON the admin panel polls. `for_mirror` strips everything an internet reader must not
+    /// see: addresses, raw device ids, local paths, process arguments. The pairing offer is never
+    /// included in either form (C2).
+    pub fn state_json(&self, for_mirror: bool) -> serde_json::Value {
+        let devices: Vec<Device> = self.devices.read().unwrap().values().cloned().collect();
+        let dev_json: Vec<serde_json::Value> = devices
+            .iter()
+            .map(|d| {
+                let mut v = serde_json::to_value(d).unwrap();
+                v["usable_bytes"] = serde_json::json!(d.usable_bytes());
+                if for_mirror {
+                    v["id"] = serde_json::json!(short_id(&d.id));
+                    v["addr"] = serde_json::Value::Null;
+                    if let Some(t) = v.get_mut("telemetry") {
+                        if t.is_object() {
+                            t["cpus_allowed"] = serde_json::Value::Null;
+                        }
+                    }
+                }
+                v
+            })
+            .collect();
+        let mut plan = serde_json::to_value(&*self.plan.read().unwrap()).unwrap();
+        let mut run = serde_json::to_value(&*self.run.read().unwrap()).unwrap();
+        if for_mirror {
+            if let Some(ps) = plan.get_mut("placements").and_then(|p| p.as_array_mut()) {
+                for p in ps {
+                    if let Some(id) = p["device_id"].as_str() {
+                        p["device_id"] = serde_json::json!(short_id(id));
+                    }
+                }
+            }
+            if let Some(h) = plan.get("host_id").and_then(|h| h.as_str()).map(short_id) {
+                plan["host_id"] = serde_json::json!(h);
+            }
+            run["args"] = serde_json::json!([]);
+            run["endpoint"] = serde_json::Value::Null;
+            if let Some(h) = run.get("host_id").and_then(|h| h.as_str()).map(short_id) {
+                run["host_id"] = serde_json::json!(h);
+            }
+        }
+        serde_json::json!({
+            "mesh_id": self.mesh_id(),
+            "devices": dev_json,
+            "models": *self.models.read().unwrap(),
+            "plan": plan,
+            "run": run,
+            "downloads": *self.downloads.read().unwrap(),
+            "policy": *self.policy.read().unwrap(),
+            "models_dir": if for_mirror { serde_json::Value::Null } else { serde_json::json!(self.models_dir) },
+            "now_ms": now_ms(),
+            "mirrored": for_mirror,
+            "lan": self.lan,
+            "auth": self.api_token.is_some(),
+        })
+    }
+}
+
+/// Stable, non-reversible short id for the public mirror.
+pub fn short_id(id: &str) -> String {
+    if id == "local" || id.starts_with("sim-") {
+        return id.to_string();
+    }
+    format!(
+        "dev-{}",
+        &hex::encode(sha2::Sha256::digest(id.as_bytes()))[..6]
+    )
 }
 
 pub fn hostname() -> String {
@@ -448,5 +559,3 @@ pub fn qr_terminal(payload: &str) -> String {
         .module_dimensions(2, 1)
         .build()
 }
-
-use sha2::Digest;

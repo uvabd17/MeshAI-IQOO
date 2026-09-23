@@ -26,6 +26,10 @@ class Profiler(private val ctx: Context) {
     val deviceId: String = Settings.Secure.getString(ctx.contentResolver, Settings.Secure.ANDROID_ID) ?: "android-unknown"
     val displayName: String = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
 
+    /** Build.SOC_* are API 31; on Android 11 fall back to the board/hardware strings (H4). */
+    private val socModel: String = if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else Build.HARDWARE
+    private val socMfr: String = if (Build.VERSION.SDK_INT >= 31) Build.SOC_MANUFACTURER else Build.BOARD
+
     fun memInfo(): ActivityManager.MemoryInfo = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
 
     fun cpuFeatures(): List<String> {
@@ -48,12 +52,18 @@ class Profiler(private val ctx: Context) {
 
     fun hasOpenCl(): Boolean = File("/vendor/lib64/libOpenCL.so").exists() || File("/system/vendor/lib64/libOpenCL.so").exists()
 
+    /**
+     * Tier gate (D015): the shipped arm64 build uses dotprod + i8mm kernels, so both are required;
+     * a phone without i8mm would SIGILL on the first matmul. x86_64 (emulator) is test-only.
+     */
     fun tier(): Tier {
         val total = memInfo().totalMem
-        val soc = Build.SOC_MODEL.uppercase()
+        val soc = socModel.uppercase()
         val feats = cpuFeatures()
+        val isArm = Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a"
         return when {
-            total < 7_000_000_000L || "asimddp" !in feats -> Tier.TIER_UNSUPPORTED
+            isArm && ("asimddp" !in feats || "i8mm" !in feats) -> Tier.TIER_UNSUPPORTED
+            total < 7_000_000_000L -> Tier.TIER_UNSUPPORTED
             soc.startsWith("SM8750") || soc.startsWith("SM8850") -> Tier.TIER_S
             total >= 11_000_000_000L -> Tier.TIER_A
             else -> Tier.TIER_B
@@ -67,7 +77,7 @@ class Profiler(private val ctx: Context) {
         return deviceProfile {
             deviceId = this@Profiler.deviceId
             os = "android/${Build.VERSION.RELEASE} (sdk ${Build.VERSION.SDK_INT})"
-            soc = "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL} · ${Build.HARDWARE}"
+            soc = "$socMfr $socModel · ${Build.HARDWARE}"
             cpuFeatures.addAll(this@Profiler.cpuFeatures())
             cs.forEachIndexed { i, (khz, cap) -> cores.add(core { index = i; maxKhz = khz; capacity = cap; this.allowed = cpuAllowed(allowed, i) }) }
             totalBytes = mi.totalMem
@@ -101,7 +111,7 @@ class Profiler(private val ctx: Context) {
         }
     }
 
-    /** One RTT sample: TCP connect to the coordinator (SYN/SYN-ACK), which tracks ping closely on a LAN. */
+    /** One RTT sample: TCP connect to the coordinator's control port (SYN/SYN-ACK ≈ ping on a LAN). */
     fun sampleRtt(host: String, port: Int) {
         val t0 = System.nanoTime()
         val ok = runCatching { Socket().use { it.connect(InetSocketAddress(host, port), 1500) }; true }.getOrDefault(false)

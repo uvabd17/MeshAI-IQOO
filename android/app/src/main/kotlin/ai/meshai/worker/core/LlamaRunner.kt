@@ -21,13 +21,16 @@ class LlamaRunner(private val ctx: Context) {
 
     val available: Boolean get() = File(libDir, "libmeshai_rpc.so").exists()
 
-    fun startWorker(port: Int, threads: Int): Boolean = start(listOf(File(libDir, "libmeshai_rpc.so").path, "-H", "0.0.0.0", "-p", "$port", "-t", "$threads", "-c"))
+    /** Worker: bind only to the address of the paired link (H2), never 0.0.0.0. */
+    fun startWorker(bindHost: String, port: Int, threads: Int): Boolean =
+        start(listOf(File(libDir, "libmeshai_rpc.so").path, "-H", bindHost, "-p", "$port", "-t", "$threads", "-c"))
 
-    fun startHost(model: File, nCtx: Int, threads: Int, workers: List<Pair<String, Int>>, nglLayers: Int, split: List<Double>): Boolean {
-        val args = mutableListOf(File(libDir, "libmeshai_server.so").path, "-m", model.path, "-c", "$nCtx", "-t", "$threads", "--host", "0.0.0.0", "--port", "8081", "--jinja", "--metrics")
+    fun startHost(bindHost: String, model: File, nCtx: Int, threads: Int, workers: List<Pair<String, Int>>, nglLayers: Int, split: List<Double>): Boolean {
+        val args = mutableListOf(File(libDir, "libmeshai_server.so").path, "-m", model.path, "-c", "$nCtx", "-t", "$threads", "--host", bindHost, "--port", "8081", "--jinja", "--metrics", "--reasoning", "off")
         if (workers.isNotEmpty()) {
-            args += listOf("--rpc", workers.joinToString(",") { "${it.first}:${it.second}" }, "-ngl", "$nglLayers")
-            if (workers.size > 1) args += listOf("--tensor-split", split.joinToString(",") { "%.4f".format(it) })
+            // Same semantics as desktop/meshd/src/supervisor.rs: ngl+1 (the output head counts), head pinned to CPU.
+            args += listOf("--rpc", workers.joinToString(",") { "${it.first}:${it.second}" }, "-ngl", "${nglLayers + 1}", "--override-tensor", "output\\.weight=CPU")
+            if (workers.size > 1) args += listOf("--tensor-split", split.joinToString(",") { "%.6f".format(it) })
         } else args += listOf("-ngl", "0")
         return start(args)
     }
@@ -59,19 +62,23 @@ class LlamaRunner(private val ctx: Context) {
         MeshState.set { it.copy(processRunning = false) }
     }
 
-    /** Fetch a model from the coordinator catalog if not cached. Returns the local file. */
+    /** Fetch a model from the coordinator catalog if not cached. Resumable (M7). Returns the local file. */
     suspend fun ensureModel(coordinatorApi: String, file: String): File = withContext(Dispatchers.IO) {
+        require(file.endsWith(".gguf") && !file.contains('/') && !file.contains("..")) { "bad model name" }
         val dest = File(modelsDir, file)
         if (dest.exists() && dest.length() > 0) return@withContext dest
         val part = File(modelsDir, "$file.part")
-        val req = Request.Builder().url("$coordinatorApi/api/models/file/$file").build()
+        val existing = if (part.exists()) part.length() else 0L
+        val req = Request.Builder().url("$coordinatorApi/api/models/file/$file").apply { if (existing > 0) header("Range", "bytes=$existing-") }.build()
         http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("model fetch ${resp.code}")
-            val total = resp.body!!.contentLength()
-            var got = 0L
+            val resumed = resp.code == 206
+            if (!resumed && existing > 0) part.delete()
+            val total = resp.body!!.contentLength() + if (resumed) existing else 0L
+            var got = if (resumed) existing else 0L
             var lastPct = -1
             resp.body!!.byteStream().use { inp ->
-                part.outputStream().use { out ->
+                java.io.FileOutputStream(part, resumed).use { out ->
                     val buf = ByteArray(1 shl 20)
                     while (true) {
                         val n = inp.read(buf); if (n < 0) break
@@ -81,8 +88,9 @@ class LlamaRunner(private val ctx: Context) {
                     }
                 }
             }
+            if (total > 0 && got != total) error("download ended early ($got/$total) — will resume next time")
         }
-        part.renameTo(dest)
+        if (!part.renameTo(dest)) error("could not move ${part.name} into place")
         MeshState.set { it.copy(downloadPct = -1) }
         MeshState.log("model cached: $file (${dest.length() / 1_000_000} MB)")
         dest

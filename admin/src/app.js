@@ -2,8 +2,10 @@
 (() => {
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  let TOKEN = ""; try { const q = new URLSearchParams(location.search).get("token"); if (q) localStorage.setItem("meshai-token", q); TOKEN = localStorage.getItem("meshai-token") || ""; } catch {}
+  const authHeaders = () => TOKEN ? { "x-mesh-token": TOKEN } : {};
   const api = async (path, opts = {}) => {
-    const r = await fetch(path, { headers: { "content-type": "application/json" }, ...opts });
+    const r = await fetch(path, { ...opts, headers: { "content-type": "application/json", ...authHeaders(), ...(opts.headers || {}) } });
     const t = await r.text();
     let j; try { j = JSON.parse(t); } catch { j = { raw: t }; }
     if (!r.ok) throw new Error(j.error || j.raw || r.statusText);
@@ -50,6 +52,7 @@
   let S = { devices: [], models: [], run: {}, plan: null, downloads: [] };
   let CAT = [];
   let RUNS = [];
+  let OFFER = null; // pairing offer lives only in this tab (never in /api/state)
   const providerMark = p => `<div class="mark ${p}">${{ qwen: "Q", openai: "O", anthropic: "A", huggingface: "HF" }[p] || "M"}</div>`;
 
   async function poll() {
@@ -75,7 +78,7 @@
 
     // selects
     const ms = $("#qs-model"); const cur = ms.value;
-    ms.innerHTML = S.models.map(m => `<option value="${esc(m.file)}">${esc(m.info.name || m.file)} · ${m.info.quant_label} · ${gb(m.info.file_bytes)} · ${m.info.n_layer}L</option>`).join("") || `<option value="">no models on disk — download one</option>`;
+    ms.innerHTML = S.models.map(m => `<option value="${esc(m.file)}">${esc(m.info.name || m.file)} · ${esc(m.info.quant_label)} · ${gb(m.info.file_bytes)} · ${m.info.n_layer}L</option>`).join("") || `<option value="">no models on disk — download one</option>`;
     if ([...ms.options].some(o => o.value === cur)) ms.value = cur;
     const hs = $("#qs-host"); const hcur = hs.value;
     hs.innerHTML = `<option value="">auto (fastest that fits)</option>` + S.devices.filter(d => d.online).map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
@@ -83,6 +86,7 @@
 
     renderTopology(); renderStats(); renderDevices(); renderModels(); renderPlan(); renderRuns();
     $("#chat-model").textContent = run.status === "ready" ? `${run.model} · ${S.plan ? S.plan.mode : ""}` : "no model running";
+    if (S.mirrored) { $("#chat-send").disabled = true; $("#qs-run").disabled = true; $("#qs-plan").disabled = true; $("#stop-btn").hidden = true; }
   }
 
   function renderTopology() {
@@ -101,8 +105,8 @@
     const tel = d.telemetry || {};
     const usable = d.usable_bytes != null ? gb(d.usable_bytes) : "—";
     const role = p ? p.role.toLowerCase() : (d.role || "idle");
-    return `<div class="node ${role} ${d.online ? "" : "offline"}">
-      <div class="n-role">${role}${d.is_local ? " · local" : ""}</div>
+    return `<div class="node ${esc(role)} ${d.online ? "" : "offline"}">
+      <div class="n-role">${esc(role)}${d.is_local ? " · local" : ""}</div>
       <div class="n-name" title="${esc(d.name)}">${esc(d.name)}</div>
       <div class="n-meta">${usable} usable${tel.rtt_ms_p50 ? ` · ${fmt(tel.rtt_ms_p50, 0)} ms` : ""}${tel.thermal_status ? ` · T${tel.thermal_status}` : ""}</div>
       ${p ? `<div class="n-layers">layers ${p.layer_start}–${Math.max(p.layer_start, p.layer_end - 1)} · ${gb(p.bytes)}</div>` : ""}
@@ -122,10 +126,10 @@
       const tel = d.telemetry || {}; const pr = d.profile || {};
       const total = pr.total_bytes || 0; const avail = tel.avail_bytes || 0;
       return `<div class="dev ${d.online ? "" : "offline"}">
-        <div class="dev-h"><span class="name">${esc(d.name)}</span><span class="tag ${d.role}">${d.role}</span></div>
+        <div class="dev-h"><span class="name">${esc(d.name)}</span><span class="tag ${esc(d.role)}">${esc(d.role)}</span></div>
         <div class="kv">
           <span class="k">id</span><span class="v">${esc(d.id)}</span>
-          <span class="k">kind</span><span class="v">${d.kind}${d.addr ? " · " + d.addr : ""}${d.is_local ? "" : " · rpc :" + d.rpc_port}</span>
+          <span class="k">kind</span><span class="v">${esc(d.kind)}${d.addr ? " · " + esc(d.addr) : ""}${d.is_local ? "" : " · rpc :" + d.rpc_port}</span>
           <span class="k">soc</span><span class="v">${esc(pr.soc || "—")}</span>
           <span class="k">os</span><span class="v">${esc(pr.os || "—")}</span>
           <span class="k">memory</span><span class="v">${avail ? gb(avail) + " free" : "—"}${total ? " / " + gb(total) : ""} → <b>${gb(d.usable_bytes || 0)} usable</b></span>
@@ -145,7 +149,8 @@
     $$("[data-limit]", el).forEach(i => i.onchange = async () => { await api(`/api/devices/${i.dataset.limit}/limit`, { method: "POST", body: JSON.stringify({ usable_gb: i.value ? +i.value : null }) }); toast("cap updated"); poll(); });
     $$("[data-forget]", el).forEach(b => b.onclick = async () => { await api(`/api/devices/${b.dataset.forget}`, { method: "DELETE" }); poll(); });
     $$("[data-bench]", el).forEach(b => b.onclick = async () => { const m = $("#qs-model").value; if (!m) return toast("pick a model first"); b.disabled = true; try { const r = await api("/api/bench", { method: "POST", body: JSON.stringify({ model: m, threads: 4 }) }); toast(`laptop: ${fmt(r.prompt_tps, 0)} pp / ${fmt(r.decode_tps, 1)} tg tok/s`); } catch (e) { toast(e.message); } b.disabled = false; poll(); });
-    if (S.offer) { $("#qr").innerHTML = S.offer.svg; $("#qr-text").innerHTML = `Scan with the MeshAI app. Coordinator <span class="mono">${esc(S.offer.host)}:${S.offer.port}</span>. Token is single-use, valid 10 min.<br><span class="mono xs">${esc(S.offer.payload)}</span>`; }
+    if (OFFER) { $("#qr").innerHTML = OFFER.svg; $("#qr-text").innerHTML = `Scan with the MeshAI app. Coordinator <span class="mono">${esc(OFFER.host)}:${OFFER.port}</span>. Token is single-use, valid 10 min — shown only on this screen.`; }
+    if (S.mirrored) { $("#offer-btn").disabled = true; $("#sim-btn").disabled = true; }
   }
   function renderModels() {
     const onDisk = new Set(S.models.map(m => m.file));
@@ -176,7 +181,7 @@
     const used = plan.placements.filter(p => p.role !== "Rejected");
     const nl = Math.max(1, ...used.map(p => p.layer_end));
     $("#layer-map").innerHTML = used.map(p => `<div class="${p.role.toLowerCase()}" style="flex:${Math.max(1, p.layer_end - p.layer_start)}" title="${esc(p.name)}">${esc(p.name)} · ${p.layer_start}–${Math.max(p.layer_start, p.layer_end - 1)}</div>`).join("") + (used.length === 1 && used[0].layer_end === 0 ? "" : "");
-    $("#placements").innerHTML = plan.placements.map(p => `<div class="placement ${p.role.toLowerCase()}"><b>${esc(p.name)}</b><span class="tag ${p.role.toLowerCase()}">${p.role}</span><span class="muted">${esc(p.reason)}</span></div>`).join("");
+    $("#placements").innerHTML = plan.placements.map(p => `<div class="placement ${p.role.toLowerCase()}"><b>${esc(p.name)}</b><span class="tag ${esc(p.role.toLowerCase())}">${esc(p.role)}</span><span class="muted">${esc(p.reason)}</span></div>`).join("");
     const args = (S.run && S.run.args && S.run.args.length) ? S.run.args : (lastPlanArgs ? [lastPlanArgs.program, ...lastPlanArgs.args] : []);
     $("#plan-args").textContent = args.join(" ");
   }
@@ -198,7 +203,7 @@
     } catch (e) { $("#qs-result").textContent = "✗ " + e.message; toast(e.message); }
   };
   $("#stop-btn").onclick = async () => { await api("/api/stop", { method: "POST" }); toast("stopped"); poll(); };
-  $("#offer-btn").onclick = async () => { await api("/api/pair/offer", { method: "POST" }); poll(); };
+  $("#offer-btn").onclick = async () => { try { OFFER = await api("/api/pair/offer", { method: "POST" }); renderDevices(); } catch (e) { toast(e.message); } };
   $("#sim-btn").onclick = async () => { try { const r = await api("/api/sim/workers", { method: "POST", body: JSON.stringify({ n: +$("#sim-n").value, usable_gb: +$("#sim-gb").value, spawn: $("#sim-spawn").checked }) }); toast(`simulated ${$("#sim-n").value} phone(s)${r.spawned_ports.length ? " with live RPC workers on " + r.spawned_ports.join(", ") : ""}`); poll(); } catch (e) { toast(e.message); } };
   $("#dl-btn").onclick = async () => { try { await api("/api/models/download", { method: "POST", body: JSON.stringify({ url: $("#dl-url").value, file: $("#dl-file").value }) }); toast("download started"); poll(); } catch (e) { toast(e.message); } };
   $("#rescan").onclick = async () => { await api("/api/models/rescan", { method: "POST" }); poll(); };
@@ -210,7 +215,7 @@
   $("#chat-input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#chat-form").requestSubmit(); } });
   async function streamChat(url, key, model, messages, onDelta) {
     const t0 = performance.now(); let ttft = null; let n = 0; let text = ""; let think = "";
-    const r = await fetch(url + "/chat/completions", { method: "POST", headers: { "content-type": "application/json", ...(key ? { authorization: "Bearer " + key } : {}) }, body: JSON.stringify({ model, messages, stream: true, stream_options: { include_usage: true } }) });
+    const r = await fetch(url + "/chat/completions", { method: "POST", headers: { "content-type": "application/json", ...(key ? { authorization: "Bearer " + key } : (url === "/v1" ? authHeaders() : {})) }, body: JSON.stringify({ model, messages, stream: true, stream_options: { include_usage: true } }) });
     if (!r.ok) throw new Error(await r.text());
     const rd = r.body.getReader(); const dec = new TextDecoder(); let buf = "";
     while (true) {

@@ -61,7 +61,8 @@
       "blocked_by": [
         "T004",
         "T006"
-      ]
+      ],
+      "evidence": "gate not passed: no real phone measurement yet (POCO F5 seen once on USB, not since). Everything below is built ahead of the gate on simulated workers — see progress.md"
     },
     {
       "id": "T008",
@@ -88,7 +89,7 @@
       "blocked_by": [
         "T007"
       ],
-      "evidence": "desktop/meshcore: gguf parser (offset-based sizes), planner (single/split/reject with reasons), framing, pairing; 8 tests green"
+      "evidence": "meshcore: gguf, planner, framing, pairing (token→per-device secret, D013; Noise deferred), 10 tests"
     },
     {
       "id": "T011",
@@ -108,27 +109,27 @@
       "blocked_by": [
         "T011"
       ],
-      "evidence": "supervisor: worker reachability wait, --rpc/-ngl/--tensor-split, health poll, ready in 4.6-13 s; /v1 proxy records rows"
+      "evidence": "supervisor rewritten after review: workers-first ordering, plan-id-keyed worker-ready, TCP check, child watcher for the whole run, teardown on failure, serialized run/stop; local split verified 22 tok/s"
     },
     {
       "id": "T013",
       "title": "meshd: host-role selection — any paired device runs llama-server, others rpc-server; /v1 proxied to the host",
       "phase": 1,
-      "status": "DONE",
+      "status": "ACTIVE",
       "blocked_by": [
         "T012"
       ],
-      "evidence": "host role selectable via prefer_host; remote host path pushes Plan + proxies to phone:8081 (untested on hardware)"
+      "evidence": "host-role selection implemented; phone-host path (model fetch, llama-server on phone) untested — needs a real phone"
     },
     {
       "id": "T020",
       "title": "Android app skeleton: Compose dashboard, connectedDevice FGS, wake+wifi locks, profiler (RAM/thermal/battery/cpuset)",
       "phase": 1,
-      "status": "DONE",
+      "status": "ACTIVE",
       "blocked_by": [
         "T007"
       ],
-      "evidence": "APK builds (80 MB, arm64+x86_64); Compose dashboard verified on emulator screenshot; FGS connectedDevice runs; profiler reports RAM/thermal/battery/cpuset/RTT to meshd"
+      "evidence": "APK builds; lint clean after API-31 guard; dashboard verified on emulator earlier; connectedDevice FGS not yet verified on a real Android 14/15 device"
     },
     {
       "id": "T021",
@@ -138,7 +139,7 @@
       "blocked_by": [
         "T020"
       ],
-      "evidence": "emulator joined, Plan pushed, app spawned libmeshai_rpc.so worker; host crashed because x86_64 build used AVX2 (emulator has AVX only) — rebuilding without AVX2; arm64 path untested (no phone on USB)"
+      "evidence": "worker binds to the paired link address, killed on link loss, reports listening with plan id; arm64 path never executed on hardware"
     },
     {
       "id": "T022",
@@ -149,7 +150,7 @@
         "T021",
         "T010"
       ],
-      "evidence": "control client: Hello/Profile/Telemetry every 2 s over framed protobuf-lite; join via QR/paste/intent extra; reconnect with backoff"
+      "evidence": "control client with token→secret pairing, 30 s read timeout, plans handled off the read loop; UniFFI dropped for v1 (D018)"
     },
     {
       "id": "T023",
@@ -159,7 +160,7 @@
       "blocked_by": [
         "T020"
       ],
-      "evidence": "host mode fetches model from meshd /api/models/file and runs llama-server; x86_64 ABI built for emulator"
+      "evidence": "host mode args mirror supervisor.rs (ngl+1, head pinned, --reasoning off); resumable model fetch; untested on hardware"
     },
     {
       "id": "T030",
@@ -169,17 +170,17 @@
       "blocked_by": [
         "T012"
       ],
-      "evidence": "admin served at /admin; headless QA: 0 console errors, all six views render"
+      "evidence": "admin at /admin; localhost-only by default; token-aware; offer never in state"
     },
     {
       "id": "T031",
       "title": "Admin web: monochrome design system (dark/light), provider marks, model catalog with HF download + progress, plan preview with layer map, chat with timing (TTFT, tok/s)",
       "phase": 1,
-      "status": "DONE",
+      "status": "ACTIVE",
       "blocked_by": [
         "T030"
       ],
-      "evidence": "browser-driven QA passed: plan preview → Run → ready → layer map → chat (328 tok, 4.8 tok/s) → analytics → QR → catalog"
+      "evidence": "browser QA re-run pending after the offer-flow change"
     },
     {
       "id": "T032",
@@ -190,7 +191,7 @@
         "T031",
         "T013"
       ],
-      "evidence": "laptop-only and simulated-mesh chats measured; cloud reference and real-phone rows pending"
+      "evidence": "laptop-only and simulated-mesh chats measured (docs/BENCHMARKS.md); cloud reference needs an API key; real-phone rows pending"
     },
     {
       "id": "T040",
@@ -209,6 +210,15 @@
       "status": "PENDING",
       "blocked_by": [
         "T032"
+      ]
+    },
+    {
+      "id": "T060",
+      "title": "Independent review round 2 after the C1–C3/H1–H7 fixes (reviewer agent)",
+      "phase": 1,
+      "status": "PENDING",
+      "blocked_by": [
+        "T031"
       ]
     }
   ]
