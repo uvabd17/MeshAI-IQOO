@@ -220,7 +220,7 @@
       "blocked_by": [
         "T031"
       ],
-      "evidence": "rounds 1–7 acted on; round 7 (phone stop report, shortfall gate, spawn/kill lock) fixed with gate unit tests + 5 more JVM tests + a scripted shortfall guard; round 8 pending"
+      "evidence": "rounds 1–8 acted on; round 8 (credited single plan replaces stop-then-re-plan, D024 rewritten, K19, host-too-small error, queued-plan stop report, spawn-fail under lock, latch test, stamps, benchmark row) executed via run-guards (27 checks incl. the replacement path); round 9 pending"
     }
   ]
 }

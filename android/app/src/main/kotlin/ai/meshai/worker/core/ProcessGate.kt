@@ -19,12 +19,17 @@ class ProcessGate {
 
     fun arm(valid: () -> Boolean) = synchronized(lock) { armed = true; this.valid = valid }
 
-    /** Refused (null) if not armed or the validity check fails; otherwise the generation of the new process. */
-    fun <T> tryStart(role: String, planId: String, spawn: () -> T): Pair<Int, T>? = synchronized(lock) {
+    /**
+     * Refused (null) if not armed or the validity check fails; otherwise the generation of the new process.
+     * A [spawn] that returns null failed: the owner is cleared inside the lock, so a racing stop reports
+     * nothing for a process that never existed (round-8 #5).
+     */
+    fun <T> tryStart(role: String, planId: String, spawn: () -> T?): Pair<Int, T?>? = synchronized(lock) {
         if (!armed || !valid()) return@synchronized null
         gen++ // any earlier process is stale from here on
         currentRole = role; currentPlanId = planId
         val v = spawn()
+        if (v == null) { currentRole = ""; currentPlanId = "" }
         gen to v
     }
 
@@ -40,8 +45,7 @@ class ProcessGate {
         had
     }
 
-    /** A spawn that failed leaves nothing to own or report. */
-    fun spawnFailed() = synchronized(lock) { currentRole = ""; currentPlanId = "" }
+
 
     fun isCurrent(g: Int) = synchronized(lock) { g == gen }
     val isArmed: Boolean get() = synchronized(lock) { armed }

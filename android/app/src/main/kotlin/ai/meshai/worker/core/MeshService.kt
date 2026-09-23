@@ -51,12 +51,14 @@ class MeshService : Service() {
     private val linkGen = java.util.concurrent.atomic.AtomicInteger(0)
     /** Owned by the actor coroutine only. */
     private var planJob: Job? = null
+    /** The newest real plan meshd sent, whether or not the actor has reached it yet (round-8 #4). */
+    @Volatile private var lastReceivedPlan: Plan? = null
 
     override fun onCreate() {
         super.onCreate()
         profiler = Profiler(this)
         runner = LlamaRunner(this)
-        client = ControlClient(this, scope, profiler, { plans.send(Queued(it, linkGen.get())) }, ::onLinkLost)
+        client = ControlClient(this, scope, profiler, { if (it.planId != "stop") lastReceivedPlan = it; plans.send(Queued(it, linkGen.get())) }, ::onLinkLost)
         runner.onExit = { role, planId, code -> if (code != 0 && (role == "worker" || role == "host")) report(role, false, "$role process exited ($code)", planId) }
         // Actor: one plan at a time, in arrival order. A newer plan (or a stop) cancels and joins the running one
         // before it starts, so a stop can never be queued behind a long model download.
@@ -99,7 +101,14 @@ class MeshService : Service() {
         val had = runner.stop()
         plans.trySend(Queued(Plan.newBuilder().setPlanId("stop").build(), gen))
         MeshState.set { it.copy(role = "idle") }
-        StopReport.decide(had, uiRoleBefore, applying)?.let { (role, planId) -> report(role, false, "$role stopped from the phone", planId) }
+        val reported = StopReport.decide(had, uiRoleBefore, applying)?.also { (role, planId) -> report(role, false, "$role stopped from the phone", planId) }
+        // A newer plan that was queued (or being joined) behind the stopped one is dropped by the generation bump:
+        // meshd must hear about that one too, or it waits for its bring-up timeout (round-8 #4).
+        lastReceivedPlan?.takeIf { it.planId != reported?.second }?.let { p ->
+            val me = p.placementsList.firstOrNull { it.deviceId == profiler.deviceId && it.used } ?: return@let
+            report(if (me.isHost) "host" else "worker", false, "stopped from the phone before this plan was applied", p.planId)
+        }
+        lastReceivedPlan = null
     }
 
     /** Runs on the control client's IO thread: kill now (and disarm the runner), then let the actor settle. */

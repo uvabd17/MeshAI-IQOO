@@ -8,7 +8,7 @@
       "covers": "syntax, JSON schema, agent/skill frontmatter, proto (when protoc), cargo/gradle unit tests when present",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "24 ok, 0 failed (04:03 IST, round-7 batch)"
+      "evidence": "24 ok, 0 failed (04:17 IST, round-8 batch)"
     },
     {
       "id": "V002",
@@ -35,7 +35,7 @@
       "covers": "gguf parser on real file, planner rules, framing, pairing secrets, llama arg derivation (ngl+1/tensor-split), model name validation, control-plane heartbeat/reconnect over a real socket (tokio), planner device growth",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "32 passed (13 meshcore + 19 meshd) after round-7, test-r7.log 04:01 IST; clippy --all-targets -D warnings clean (adds stop_could_cure gate tests)"
+      "evidence": "31 passed (13 meshcore + 18 meshd) after round-8, test-r8.log 04:14 IST; clippy --all-targets -D warnings clean (credit_tests replace the stop_could_cure tests)"
     },
     {
       "id": "V005",
@@ -44,7 +44,7 @@
       "covers": "T009/T012 run path incl. worker wait, host watcher, /v1 proxy rows",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 04:03 IST (round-7 build) via scripts/qa/run-guards.sh: ready, 3 chats up to 22.7 tok/s client, stop ok"
+      "evidence": "PASS 04:16 IST (round-8 build) via scripts/qa/run-guards.sh: ready, 3 chats up to 22.3 tok/s client, stop ok"
     },
     {
       "id": "V006",
@@ -53,7 +53,7 @@
       "covers": "T031: plan preview, Run, ready, layer map, chat + timings, analytics, QR, catalog",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 04:03 IST (round-7 build): all views; chat {'ttft': '207ms', 'tps': '23.7tok/s', 'tokens': '19', 'total': '1.0s'}; 0 console errors, 0 failed requests"
+      "evidence": "PASS 04:16 IST (round-8 build): all views; chat 197 ms TTFT / 22.7 tok/s / 33 tok; 0 console errors, 0 failed requests"
     },
     {
       "id": "V007",
@@ -62,7 +62,7 @@
       "covers": "T020 NewApi and manifest rules",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS gradle-r7.log 04:02 IST: lint + testDebugUnitTest (15) + assembleDebug"
+      "evidence": "PASS gradle-r8.log 04:15 IST: lint + testDebugUnitTest (15) + assembleDebug"
     },
     {
       "id": "V008",
@@ -80,7 +80,7 @@
       "covers": "N5/M10: background bring-up with generation; stop is not blocked",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 04:03 IST (round-7 build): stop at 0.05/0.3/1.0/2.5 s into bring-up, 115–122 ms, 0 orphans"
+      "evidence": "PASS 04:16 IST (round-8 build): stop at 0.05/0.3/1.0/2.5 s into bring-up, 114–121 ms, 0 orphans"
     },
     {
       "id": "V010",
@@ -98,7 +98,7 @@
       "covers": "HostArgsTest: phone host split rule == derive_args (ngl+1, head pinned, 0.440000,0.560000), single worker no split, no workers ngl 0, Locale-independent decimals",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "tests=15 failures=0 (HostArgsTest 4, ProcessGateTest 8 incl. kill-under-the-spawn-lock and failed-spawn, StopReportTest 3 incl. stop mid-download), gradle-r7.log 04:02 IST"
+      "evidence": "tests=15 failures=0 (HostArgsTest 4, ProcessGateTest 8 — spawn/kill lock test now latch-based, failed spawn cleared under the lock —, StopReportTest 3), gradle-r8.log 04:15 IST"
     },
     {
       "id": "V012",
@@ -107,7 +107,7 @@
       "covers": "416 carries Content-Range */len; POST /api/run with a phone host and no --lan → 422 and the current run stays ready; DELETE /api/devices/{id} on a run member → run error 'was forgotten', device removed",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 04:03 IST (round-7 build, run-guards.sh ALL OK): 416 */len; --lan, n_ctx, unknown-model refusals 422 with the run still ready; NEW: 8B model against the capped pool → 422 without 'previous run stopped' and the run still ready (stop_could_cure); forget member → error, device removed"
+      "evidence": "PASS 04:16 IST (round-8 build, run-guards.sh ALL OK, 27 checks): refusals (--lan, n_ctx, unknown model, 8B shortfall) all 422 with the run still ready; NEW replacement path with the laptop MEASURED: laptop-alone run (mode Single) → re-run with ctx 4096 accepted, response credited=[[local, bytes]], ready, run log 'plan credits local …', no re-plan; forget member → error, device removed"
     }
   ]
 }

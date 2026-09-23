@@ -405,11 +405,10 @@ async fn api_plan(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Re
     }
 }
 
-/// Order (D024): cheap checks and a *dry-run plan* against the current memory view first — a
-/// request that fails for a reason a stop cannot cure (unknown model, bad n_ctx, tier gate, phone
-/// host without `--lan`) never touches the running mesh. Only a memory shortfall may resolve after
-/// the stop, so then: stop → plan against the freed memory (M4) → start (N5). If the re-plan still
-/// fails the 422 body and the run log say that the previous run was stopped (round-6 #1).
+/// Order (D024): cheap checks, then ONE plan made against capacities credited with the live run's
+/// own bytes (`credited_caps`). If it fails the request is refused and the live run is untouched.
+/// If it succeeds: stop → start that very plan (no re-plan, so phones' 2 s telemetry lag cannot
+/// turn a "yes" into a dead mesh; round-8 #1). Bring-up continues in the background (N5).
 async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Response {
     let _g = st.run_lock.lock().await;
     let refuse = |e: String| {
@@ -423,46 +422,32 @@ async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Res
         return refuse(e);
     }
     st.refresh_local_profile();
-    let remote_without_lan = |plan: &meshcore::planner::Plan| {
-        !st.lan
-            && st
-                .devices
-                .read()
-                .unwrap()
-                .get(&plan.host_id)
-                .map(|d| !d.is_local)
-                .unwrap_or(false)
+    let (plan, credits) = match st.make_plan_credited(&r.model, r.n_ctx, r.host.clone()) {
+        Ok(p) => p,
+        Err(e) => return refuse(e.to_string()),
     };
-    const LAN_MSG: &str = "a phone can only be the host when meshd runs with --lan --api-token (it fetches the model from this API)";
-    match st.make_plan(&r.model, r.n_ctx, r.host.clone()) {
-        Ok(dry) if remote_without_lan(&dry) => return refuse(LAN_MSG.into()),
-        Ok(_) => {}
-        Err(e) => {
-            // Proceed to the stop only if a run is actually live and what it would free covers the
-            // shortfall; anything else is refused without touching the mesh (round-7 #2, #6).
-            let live = st.run.read().unwrap().plan_id.is_some();
-            if !live || !crate::state::stop_could_cure(&e, st.freeable_bytes()) {
-                return refuse(e.to_string());
-            }
-        }
+    let host_is_remote = st
+        .devices
+        .read()
+        .unwrap()
+        .get(&plan.host_id)
+        .map(|d| !d.is_local)
+        .unwrap_or(false);
+    if host_is_remote && !st.lan {
+        return refuse("a phone can only be the host when meshd runs with --lan --api-token (it fetches the model from this API)".into());
     }
     supervisor::stop(&st).await;
-    st.refresh_local_profile();
-    let plan = match st.make_plan(&r.model, r.n_ctx, r.host) {
-        Ok(p) => p,
-        Err(e) => {
-            let msg = format!("previous run stopped; new plan failed: {e}");
-            st.push_log(msg.clone());
-            return refuse(msg);
-        }
-    };
-    if remote_without_lan(&plan) {
-        let msg = format!("previous run stopped; new plan refused: {LAN_MSG}");
-        st.push_log(msg.clone());
-        return refuse(msg);
-    }
     match supervisor::start(st.clone(), plan.clone()).await {
-        Ok(()) => Json(serde_json::json!({"ok": true, "plan": plan})).into_response(),
+        Ok(()) => {
+            // Logged after start(), which begins a fresh run log.
+            for (id, bytes) in &credits {
+                st.push_log(format!(
+                    "plan credits {id} with {:.2} GB the previous run released",
+                    *bytes as f64 / 1e9
+                ));
+            }
+            Json(serde_json::json!({"ok": true, "plan": plan, "credited": credits})).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
