@@ -2,6 +2,7 @@ package ai.meshai.worker.core
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -15,15 +16,21 @@ import java.util.concurrent.TimeUnit
  */
 class LlamaRunner(private val ctx: Context) {
     private val libDir = File(ctx.applicationInfo.nativeLibraryDir)
+    private val lock = Any()
     private var proc: Process? = null
-    private val http = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS).build()
+    /** Which run the current process belongs to, so an exit callback for an old process never masks a new one. */
+    private var procGen = 0
+    var onExit: ((role: String, code: Int) -> Unit)? = null
+    @Volatile private var role = ""
+    // Finite read timeout: a stalled model stream must not block the cancellable loop forever.
+    private val http = OkHttpClient.Builder().readTimeout(60, TimeUnit.SECONDS).build()
     val modelsDir: File = File(ctx.getExternalFilesDir(null), "models").apply { mkdirs() }
 
     val available: Boolean get() = File(libDir, "libmeshai_rpc.so").exists()
 
     /** Worker: bind only to the address of the paired link (H2), never 0.0.0.0. */
     fun startWorker(bindHost: String, port: Int, threads: Int): Boolean =
-        start(listOf(File(libDir, "libmeshai_rpc.so").path, "-H", bindHost, "-p", "$port", "-t", "$threads", "-c"))
+        start("worker", listOf(File(libDir, "libmeshai_rpc.so").path, "-H", bindHost, "-p", "$port", "-t", "$threads", "-c"))
 
     /**
      * Same rule as desktop/meshd/src/supervisor.rs `derive_args`: llama.cpp counts the output head as a
@@ -38,34 +45,39 @@ class LlamaRunner(private val ctx: Context) {
             if (workers.size > 1) {
                 val total = (ngl + 1).toDouble()
                 val split = workerLayers.mapIndexed { i, n -> (if (i == workerLayers.lastIndex) n + 1 else n) / total }
-                args += listOf("--tensor-split", split.joinToString(",") { "%.6f".format(it) })
+                args += listOf("--tensor-split", split.joinToString(",") { String.format(java.util.Locale.ROOT, "%.6f", it) })
             }
         } else args += listOf("-ngl", "0")
-        return start(args)
+        return start("host", args)
     }
 
-    private fun start(cmd: List<String>): Boolean {
-        stop()
-        return runCatching {
+    private fun start(newRole: String, cmd: List<String>): Boolean = synchronized(lock) {
+        stopLocked()
+        runCatching {
             val pb = ProcessBuilder(cmd).redirectErrorStream(true)
             pb.environment()["LD_LIBRARY_PATH"] = libDir.path
             pb.environment()["HOME"] = ctx.filesDir.path
             pb.directory(ctx.filesDir)
             val p = pb.start()
-            proc = p
+            proc = p; role = newRole
+            val myGen = ++procGen
             MeshState.set { it.copy(processRunning = true, lastError = null) }
             MeshState.log("▶ ${cmd.drop(1).joinToString(" ")}")
             Thread {
                 p.inputStream.bufferedReader().useLines { seq -> seq.forEach { MeshState.log(it.take(200)) } }
                 val code = runCatching { p.waitFor() }.getOrDefault(-1)
-                MeshState.log("■ process exited ($code)")
-                MeshState.set { it.copy(processRunning = false) }
+                MeshState.log("■ $newRole process exited ($code)")
+                val stillCurrent = synchronized(lock) { procGen == myGen }
+                if (stillCurrent) { MeshState.set { it.copy(processRunning = false) }; onExit?.invoke(newRole, code) }
             }.start()
             true
         }.onFailure { MeshState.log("✗ start failed: ${it.message}"); MeshState.set { s -> s.copy(lastError = it.message) } }.getOrDefault(false)
     }
 
-    fun stop() {
+    fun stop() = synchronized(lock) { stopLocked() }
+
+    private fun stopLocked() {
+        procGen++ // any exit callback of the old process is now stale
         proc?.let { p -> runCatching { p.destroy(); if (!p.waitFor(2, TimeUnit.SECONDS)) p.destroyForcibly() } }
         proc = null
         MeshState.set { it.copy(processRunning = false) }
@@ -80,6 +92,7 @@ class LlamaRunner(private val ctx: Context) {
         val existing = if (part.exists()) part.length() else 0L
         val req = Request.Builder().url("$coordinatorApi/api/models/file/$file").apply { if (existing > 0) header("Range", "bytes=$existing-") }.build()
         http.newCall(req).execute().use { resp ->
+            if (resp.code == 416) { part.delete(); error("resume rejected (416); partial file removed — retry") }
             if (!resp.isSuccessful) error("model fetch ${resp.code}")
             val resumed = resp.code == 206
             if (!resumed && existing > 0) part.delete()

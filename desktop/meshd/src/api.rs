@@ -134,7 +134,8 @@ fn host_is_loopback(req: &Request) -> bool {
 /// Request guard: token (when configured), JSON-only mutations, loopback Host on localhost.
 async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
-    let is_get = req.method() == axum::http::Method::GET;
+    let is_get =
+        req.method() == axum::http::Method::GET || req.method() == axum::http::Method::HEAD;
     let is_static = path.starts_with("/admin") || path == "/";
     let is_model_file = path.starts_with("/api/models/file/");
     // DNS-rebinding defence when we only listen on loopback.
@@ -318,7 +319,7 @@ async fn api_model_file(
         .and_then(|v| v.split('-').next())
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
-    if start > len {
+    if start >= len && len > 0 {
         return (StatusCode::RANGE_NOT_SATISFIABLE, "").into_response();
     }
     use tokio::io::AsyncSeekExt;
@@ -414,6 +415,21 @@ async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Res
                 .into_response()
         }
     };
+    // A phone host fetches the model from this API, so it needs --lan (round-3 #2).
+    let host_is_remote = st
+        .devices
+        .read()
+        .unwrap()
+        .get(&plan.host_id)
+        .map(|d| !d.is_local)
+        .unwrap_or(false);
+    if host_is_remote && !st.lan {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": "a phone can only be the host when meshd runs with --lan --api-token (it fetches the model from this API)"})),
+        )
+            .into_response();
+    }
     match supervisor::start(st.clone(), plan.clone()).await {
         Ok(()) => Json(serde_json::json!({"ok": true, "plan": plan})).into_response(),
         Err(e) => (

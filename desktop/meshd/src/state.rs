@@ -50,6 +50,9 @@ pub struct Device {
     /// Identity of the live control connection; a stale handler must not touch a reconnected device.
     #[serde(default)]
     pub conn_id: u64,
+    /// The last plan pushed to this device (re-sent if it reconnects during the run, L6). Not serialised.
+    #[serde(skip)]
+    pub last_plan: Option<proto::Plan>,
 }
 
 impl Device {
@@ -166,6 +169,9 @@ pub struct AppState {
     pub plan_tx: tokio::sync::broadcast::Sender<(String, proto::Plan)>, // device_id -> plan to push
     /// Serialises the *initiation* of start/stop; the long waits run in a task tagged with `run_gen`.
     pub run_lock: tokio::sync::Mutex<()>,
+    /// Held across "check generation → spawn/register/kill a process or push a plan" so a stop can
+    /// never interleave with a registration (round-3 #3).
+    pub proc_lock: tokio::sync::Mutex<()>,
     /// Bumped by every stop/start; background tasks quit when their generation is stale.
     pub run_gen: AtomicU64,
     pub conn_seq: AtomicU64,
@@ -219,6 +225,7 @@ impl AppState {
             sim_children: Mutex::new(Vec::new()),
             plan_tx,
             run_lock: tokio::sync::Mutex::new(()),
+            proc_lock: tokio::sync::Mutex::new(()),
             run_gen: AtomicU64::new(0),
             conn_seq: AtomicU64::new(0),
             mirror: RwLock::new(None),
@@ -257,6 +264,7 @@ impl AppState {
             has_plan: false,
             link_local_addr: None,
             conn_id: 0,
+            last_plan: None,
         }
     }
 
@@ -401,17 +409,25 @@ impl AppState {
     fn paired_path(&self) -> PathBuf {
         self.state_dir.join("paired.json")
     }
-    /// Device secrets: owner-only file (0600), git-ignored.
+    /// Device secrets: created 0600 from the first byte (temp file + rename), git-ignored.
     pub fn save_paired(&self) {
         let list: Vec<PairedDevice> = self.pairing.lock().unwrap().export();
         let _ = std::fs::create_dir_all(&self.state_dir);
         if let Ok(s) = serde_json::to_string_pretty(&list) {
             let p = self.paired_path();
-            let _ = std::fs::write(&p, s);
+            let tmp = p.with_extension("json.tmp");
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(true);
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            if let Ok(mut f) = opts.open(&tmp) {
+                use std::io::Write;
+                if f.write_all(s.as_bytes()).is_ok() {
+                    let _ = std::fs::rename(&tmp, &p);
+                }
             }
         }
     }
@@ -519,6 +535,11 @@ impl AppState {
                 v["usable_bytes"] = serde_json::json!(d.usable_bytes());
                 if for_mirror {
                     v["id"] = serde_json::json!(short_id(&d.id));
+                    v["name"] = serde_json::json!(match d.kind {
+                        DeviceKind::Laptop => "laptop".to_string(),
+                        DeviceKind::Sim => d.name.clone(),
+                        DeviceKind::Phone => format!("phone {}", short_id(&d.id)),
+                    });
                     v["addr"] = serde_json::Value::Null;
                     v["link_local_addr"] = serde_json::Value::Null;
                     if let Some(p) = v.get_mut("profile") {
@@ -681,6 +702,10 @@ mod tests {
         assert!(
             !s.contains("aa09341810e79e0c"),
             "mirror snapshot leaks the raw device id"
+        );
+        assert!(
+            !s.contains("POCO F5"),
+            "mirror snapshot leaks the phone display name"
         );
         assert!(
             !s.contains("/mnt/storage"),

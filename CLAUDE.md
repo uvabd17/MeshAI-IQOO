@@ -7,7 +7,7 @@ Pool a phone's and a laptop's memory over a private link to run GGUF models neit
 - **Don't split if it fits.** The scheduler uses the fewest devices that hold the model. Adding a device must be justified by memory, never assumed to add speed.
 - **Two planes.** Tensor traffic is ggml RPC (borrowed, never reimplemented in v1). Control traffic is ours (`proto/mesh.proto`, Rust `meshcore`). The RPC port opens only after pairing and only on the paired link.
 - **Native.** Kotlin owns pixels, Rust owns decisions, C/C++ owns tensors. No Python/Flutter coordinator, no JVM desktop core.
-- **Android floor.** arm64-v8a, minSdk 30, ≥8 GB RAM, `dotprod`. Every shipped `.so` is 16 KB page-aligned.
+- **Android floor.** arm64-v8a, minSdk 30, ≥8 GB RAM, `dotprod` **and `i8mm`** (D015 — the shipped kernels use both). Every shipped `.so` is 16 KB page-aligned.
 - **No cloud, no accounts, no telemetry off-device.**
 
 ## Build / verify

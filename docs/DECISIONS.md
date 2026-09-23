@@ -67,3 +67,6 @@ Format: **D### — title** · date · context · decision · alternatives reject
 
 ## D022 — Heartbeat on a fixed interval (fixes a round-2 CRITICAL)
 2026-09-24 · The coordinator's heartbeat lived in a `select!` sleep branch that was re-created on every loop iteration, so it never fired while telemetry streamed every 2 s; combined with the phone's read timeout every real link would drop every ~30 s. **Decision:** `tokio::time::interval(10 s)` created once per connection; phone read timeout 45 s. Not yet executed on a device (no phone on USB) — T021 stays open until a 5-minute link test is logged. Status: accepted, verification pending.
+
+## D023 — Greedy contiguous fill, host first (amends ARCHITECTURE §7 rule 2)
+2026-09-24 · Proportional targets produced false `DoesNotFit` on tight pools (round-2 N7). **Decision:** the host keeps embeddings/output plus as many leading layers as it can hold, then each further device (largest usable memory first) takes as many consecutive layers as it can hold; devices keep being added while layers remain. The "laptop last" phrasing in §7 is superseded: the host is the laptop unless the user picks a phone, because input/output happen there (D009); loading the host fully first is accepted because it holds the head and KV for the earliest layers anyway. Status: accepted.

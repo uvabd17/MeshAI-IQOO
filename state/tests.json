@@ -32,10 +32,10 @@
       "id": "V004",
       "name": "cargo test (meshcore + meshd)",
       "cmd": "cd desktop && cargo test",
-      "covers": "gguf parser on real file, planner rules, framing, pairing secrets, llama arg derivation (ngl+1/tensor-split), model name validation",
+      "covers": "gguf parser on real file, planner rules, framing, pairing secrets, llama arg derivation (ngl+1/tensor-split), model name validation, control-plane heartbeat/reconnect over a real socket (tokio), planner device growth",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "17 passed (gguf on real file, planner incl. tier gate/greedy fill/tie-break, framing, pairing secrets + takeover refusal, arg derivation, model name validation, mirror snapshot leak test)"
+      "evidence": "19 passed (13 meshcore incl. fragmentation_adds_the_next_device_instead_of_failing; 6 meshd incl. heartbeats_keep_flowing_while_telemetry_streams — fake phone streams telemetry 25 s, ≥2 heartbeats received, secret reconnect supersedes old socket, wrong secret → Bye; mirror_snapshot_is_clean with name/path/log assertions). clippy -D warnings clean."
     },
     {
       "id": "V005",
@@ -44,7 +44,7 @@
       "covers": "T009/T012 run path incl. worker wait, host watcher, /v1 proxy rows",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "dd64158: ready ~5 s; server 91.7 tok/s prompt / 10.8 tok/s gen (machine loaded), earlier 113 / 22 on a quiet machine; placement == llama.cpp verbose log"
+      "evidence": "PASS 2026-09-24 03:10 (round-3 build): split plan laptop 0–6 / sim1 7–25 / sim2 26–27, ready in 2.07 s, 3 streamed chats, server 121 tok/s prompt / 22.5 tok/s gen, client 20.1–21.3 tok/s, stop ok; log scratchpad/split-sim-r3.log"
     },
     {
       "id": "V006",
@@ -53,7 +53,7 @@
       "covers": "T031: plan preview, Run, ready, layer map, chat + timings, analytics, QR, catalog",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "re-run on 19f2e4f after the offer-flow change: all 13 steps pass, QR renders from POST /api/pair/offer"
+      "evidence": "PASS 2026-09-24 03:12 (round-3 build): plan preview → run → ready (2.0 s) → plan view layer map → chat 228 ms TTFT / 23.6 tok/s / 24 tok → analytics (18 requests, avg 15.3 tok/s) → devices 3 → QR → catalog 4 → disk 3; 0 console errors, 0 failed requests"
     },
     {
       "id": "V007",
@@ -62,7 +62,7 @@
       "covers": "T020 NewApi and manifest rules",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "gradle lint + assembleDebug clean after Profiler API-31 guard (2026-09-24)"
+      "evidence": "PASS 2026-09-24 03:05 after round-3 Kotlin changes (serial plan actor, synchronized process ownership + exit reports, ensureActive, Locale.ROOT, 60 s read timeout); app-debug.apk 80.9 MB"
     },
     {
       "id": "V008",
@@ -80,7 +80,7 @@
       "covers": "N5/M10: background bring-up with generation; stop is not blocked",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "run 11 ms, stop 115 ms, status idle, no llama-server process left"
+      "evidence": "PASS 2026-09-24 03:11 (round-3 build, proc_lock): stop issued 0.05/0.3/1.0/2.5 s into bring-up → 114–121 ms each, status idle, 0 llama-server orphans, sim workers untouched"
     }
   ]
 }

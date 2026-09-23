@@ -197,7 +197,14 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
             ..Default::default()
         };
     }
-    let la = llama_args(&st, &plan)?; // fail fast on a broken plan
+    let la = match llama_args(&st, &plan) {
+        Ok(la) => la, // fail fast on a broken plan, and say so in the status
+        Err(e) => {
+            set_error(&st, &format!("cannot derive llama-server arguments: {e}"));
+            *st.plan.write().unwrap() = None;
+            return Err(e);
+        }
+    };
     st.run.write().unwrap().args = std::iter::once(la.program.clone())
         .chain(la.args.iter().cloned())
         .collect();
@@ -210,12 +217,7 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
     let st2 = st.clone();
     tokio::spawn(async move {
         if let Err(e) = bring_up(st2.clone(), plan, plan_id, gen, la).await {
-            if st2.gen() == gen {
-                set_error(&st2, &format!("start failed: {e}"));
-                withdraw_and_kill(&st2).await;
-            } else {
-                tracing::info!("gen {gen} superseded: {e}");
-            }
+            fail_if_current(&st2, gen, &format!("start failed: {e}")).await;
         }
     });
     Ok(())
@@ -227,6 +229,49 @@ macro_rules! bail_if_stale {
             anyhow::bail!("cancelled");
         }
     };
+}
+
+/// Mark a device as holding a plan and push it. Caller holds `proc_lock` and has checked the
+/// generation, so a concurrent stop can never race the registration (round-3 #3).
+fn push_plan_locked(st: &AppState, id: &str, plan: meshcore::proto::Plan) {
+    if let Some(dev) = st.devices.write().unwrap().get_mut(id) {
+        dev.worker_ready_plan = None;
+        dev.has_plan = true;
+        dev.last_plan = Some(plan.clone());
+    }
+    let _ = st.plan_tx.send((id.to_string(), plan));
+}
+
+/// End the run with an error, but only if it is still generation `gen`: a newer run is never touched.
+async fn fail_if_current(st: &Arc<AppState>, gen: u64, msg: &str) {
+    let _g = st.proc_lock.lock().await;
+    if st.gen() != gen {
+        tracing::info!("gen {gen} superseded: {msg}");
+        return;
+    }
+    set_error(st, msg);
+    withdraw_and_kill_locked(st).await;
+    let mut r = st.run.write().unwrap();
+    r.endpoint = None;
+    r.plan_id = None;
+    drop(r);
+    *st.plan.write().unwrap() = None;
+}
+
+/// A device reported that its process died or that it refused the plan: end the current run if
+/// that device is part of it (round-3 #2).
+pub async fn fail_run_from_device(st: &Arc<AppState>, device_id: &str, why: &str) {
+    let gen = st.gen();
+    let involved = st
+        .devices
+        .read()
+        .unwrap()
+        .get(device_id)
+        .map(|d| d.has_plan)
+        .unwrap_or(false);
+    if involved {
+        fail_if_current(st, gen, &format!("device {device_id}: {why}")).await;
+    }
 }
 
 async fn bring_up(
@@ -243,6 +288,8 @@ async fn bring_up(
         .any(|p| p.role == Role::Worker && p.device_id == "local")
     {
         let bind = local_addr_for(&st, &plan.host_id);
+        let _g = st.proc_lock.lock().await;
+        bail_if_stale!(st, gen);
         let child = spawn_rpc_server(&st.llama_bin, &bind, meshcore::RPC_PORT, None, true)?;
         st.push_log(format!(
             "local worker: ggml-rpc-server on {bind}:{} (pid {})",
@@ -269,18 +316,11 @@ async fn bring_up(
         .map(|p| p.device_id.clone())
         .collect();
     {
-        let mut d = st.devices.write().unwrap();
+        let _g = st.proc_lock.lock().await;
+        bail_if_stale!(st, gen);
         for id in &remote_workers {
-            if let Some(dev) = d.get_mut(id) {
-                dev.worker_ready_plan = None;
-                dev.has_plan = true;
-            }
+            push_plan_locked(&st, id, to_proto(&st, &plan, &plan_id, id));
         }
-    }
-    for id in &remote_workers {
-        let _ = st
-            .plan_tx
-            .send((id.clone(), to_proto(&st, &plan, &plan_id, id)));
     }
     // Remote phones report "worker listening" for this plan id (M2): a bare TCP probe is not
     // enough because adb/port forwards accept connections before anything listens behind them.
@@ -341,12 +381,17 @@ async fn bring_up(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("spawn llama-server: {e}"))?;
+        let mut child = {
+            let _g = st.proc_lock.lock().await;
+            bail_if_stale!(st, gen);
+            let child = cmd
+                .spawn()
+                .map_err(|e| anyhow::anyhow!("spawn llama-server: {e}"))?;
+            *st.host_pid.lock().unwrap() = child.id();
+            child
+        };
         let stderr = child.stderr.take();
         let stdout = child.stdout.take();
-        *st.host_pid.lock().unwrap() = child.id();
         st.run.write().unwrap().status = "loading".into();
         for pipe in [
             stdout.map(|p| Box::pin(p) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>),
@@ -370,20 +415,22 @@ async fn bring_up(
         let st2 = st.clone();
         tokio::spawn(async move {
             let status = child.wait().await;
-            if st2.gen() != gen {
-                return; // a newer run owns the state now
+            let msg = match status {
+                Ok(c) => format!("llama-server exited ({c})"),
+                Err(e) => format!("llama-server wait failed: {e}"),
+            };
+            {
+                let _g = st2.proc_lock.lock().await;
+                if st2.gen() != gen {
+                    return; // a newer run owns the state now
+                }
+                *st2.host_pid.lock().unwrap() = None;
+                let s = st2.run.read().unwrap().status.clone();
+                if !(s == "loading" || s == "ready" || s == "starting") {
+                    return;
+                }
             }
-            *st2.host_pid.lock().unwrap() = None;
-            let s = st2.run.read().unwrap().status.clone();
-            if s == "loading" || s == "ready" || s == "starting" {
-                let msg = match status {
-                    Ok(c) => format!("llama-server exited ({c})"),
-                    Err(e) => format!("llama-server wait failed: {e}"),
-                };
-                set_error(&st2, &msg);
-                withdraw_and_kill(&st2).await;
-                st2.run.write().unwrap().endpoint = None;
-            }
+            fail_if_current(&st2, gen, &msg).await;
         });
         let st2 = st.clone();
         tokio::spawn(async move {
@@ -396,13 +443,15 @@ async fn bring_up(
         });
     } else {
         // Phone host: push its plan only now that its workers are up; it runs llama-server on :8081.
-        if let Some(dev) = st.devices.write().unwrap().get_mut(&plan.host_id) {
-            dev.has_plan = true;
+        {
+            let _g = st.proc_lock.lock().await;
+            bail_if_stale!(st, gen);
+            push_plan_locked(
+                &st,
+                &plan.host_id,
+                to_proto(&st, &plan, &plan_id, &plan.host_id),
+            );
         }
-        let _ = st.plan_tx.send((
-            plan.host_id.clone(),
-            to_proto(&st, &plan, &plan_id, &plan.host_id),
-        ));
         let addr = st
             .devices
             .read()
@@ -452,7 +501,7 @@ async fn wait_ready(st: Arc<AppState>, gen: u64, endpoint: String) {
             }
         }
         if std::time::Instant::now() > deadline {
-            set_error(&st, "timeout waiting for /health");
+            fail_if_current(&st, gen, "timeout waiting for /health").await;
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -490,8 +539,8 @@ async fn stop_processes(st: &Arc<AppState>) {
 }
 
 /// Withdraw the plan from every remote device that received one (they kill their processes) and
-/// kill ours. Used by stop, by the host watcher and by a failed bring-up (H6).
-async fn withdraw_and_kill(st: &Arc<AppState>) {
+/// kill ours. Caller holds `proc_lock`. Used by stop, the host watcher and a failed bring-up (H6).
+async fn withdraw_and_kill_locked(st: &Arc<AppState>) {
     stop_processes(st).await;
     let ids: Vec<String> = st
         .devices
@@ -515,12 +564,14 @@ async fn withdraw_and_kill(st: &Arc<AppState>) {
         dev.role = "idle".into();
         dev.has_plan = false;
         dev.worker_ready_plan = None;
+        dev.last_plan = None;
     }
 }
 
 pub async fn stop(st: &Arc<AppState>) {
+    let _g = st.proc_lock.lock().await;
     st.run_gen.fetch_add(1, Ordering::SeqCst); // cancels any bring-up / watcher of the old run
-    withdraw_and_kill(st).await;
+    withdraw_and_kill_locked(st).await;
     let mut r = st.run.write().unwrap();
     r.status = "idle".into();
     r.endpoint = None;
