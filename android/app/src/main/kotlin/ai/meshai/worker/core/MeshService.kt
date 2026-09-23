@@ -3,8 +3,6 @@ package ai.meshai.worker.core
 import ai.meshai.proto.Plan
 import ai.meshai.proto.envelope
 import ai.meshai.proto.jobProgress
-import java.net.InetSocketAddress
-import java.net.Socket
 import ai.meshai.worker.MainActivity
 import ai.meshai.worker.MeshApp
 import ai.meshai.worker.R
@@ -22,10 +20,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.net.InetSocketAddress
+import java.net.Socket
 
 /**
  * Foreground service (type connectedDevice — not time-capped, D005) that owns the control link,
  * the llama.cpp child process, a partial wake lock and a low-latency Wi-Fi lock while participating.
+ * If the control link drops, the worker/host process is killed (H2): no orphaned RPC ports.
  */
 class MeshService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -39,8 +40,8 @@ class MeshService : Service() {
         super.onCreate()
         profiler = Profiler(this)
         runner = LlamaRunner(this)
-        client = ControlClient(scope, profiler, ::applyPlan)
-        MeshState.set { it.copy(threads = profiler.workerThreads(), cpusAllowed = profiler.cpusAllowed()) }
+        client = ControlClient(this, scope, profiler, ::applyPlan, ::onLinkLost)
+        MeshState.set { it.copy(threads = profiler.workerThreads(), cpusAllowed = profiler.cpusAllowed(), tier = profiler.tier().name.removePrefix("TIER_")) }
         if (!runner.available) MeshState.log("⚠ llama.cpp binaries missing from this build (jniLibs)")
     }
 
@@ -56,6 +57,12 @@ class MeshService : Service() {
         return START_STICKY
     }
 
+    private fun onLinkLost() {
+        if (MeshState.ui.value.processRunning) { MeshState.log("link lost — stopping llama.cpp process"); runner.stop() }
+        MeshState.set { it.copy(role = "idle") }
+        updateNotification("Reconnecting…")
+    }
+
     private suspend fun applyPlan(plan: Plan) {
         MeshState.currentPlan = plan
         val me = plan.placementsList.firstOrNull { it.deviceId == profiler.deviceId }
@@ -66,6 +73,7 @@ class MeshService : Service() {
             return
         }
         val threads = if (plan.nThreads > 0) plan.nThreads else profiler.workerThreads()
+        val bind = client.linkLocalAddress ?: "127.0.0.1"
         MeshState.set { it.copy(planSummary = plan.summary, layerStart = me.layerStart, layerEnd = me.layerEnd, modelFile = plan.modelFile, threads = threads) }
         if (me.isHost) {
             MeshState.set { it.copy(role = "host") }
@@ -75,31 +83,32 @@ class MeshService : Service() {
                 val file = runner.ensureModel("http://$coord", plan.modelFile)
                 val workers = plan.placementsList.filter { it.used && !it.isHost }
                 val ngl = workers.sumOf { it.layerEnd - it.layerStart }
-                runner.startHost(file, plan.nCtx, threads, workers.map { it.addr to it.rpcPort }, ngl, workers.map { it.splitWeight })
+                runner.startHost(bind, file, plan.nCtx, threads, workers.map { it.addr to it.rpcPort }, ngl, workers.map { it.splitWeight })
             } catch (e: Exception) { MeshState.log("✗ host: ${e.message}"); MeshState.set { it.copy(lastError = e.message) } }
         } else {
             MeshState.set { it.copy(role = "worker") }
             updateNotification("Worker: layers ${me.layerStart}–${me.layerEnd - 1}")
             val port = me.rpcPort.takeIf { it > 0 } ?: 50052
-            if (runner.startWorker(port, threads)) scope.launch { reportListening(port) }
+            if (runner.startWorker(bind, port, threads)) scope.launch { reportListening(bind, port, plan.planId) }
         }
     }
 
-    /** Poll our own RPC port until it accepts, then tell the coordinator; it launches the host only after this. */
-    private suspend fun reportListening(port: Int) {
+    /** Poll our own RPC port until it accepts, then tell the coordinator (with the plan id, M2). */
+    private suspend fun reportListening(host: String, port: Int, planId: String) {
         repeat(60) {
-            val ok = runCatching { Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 500) }; true }.getOrDefault(false)
+            val ok = runCatching { Socket().use { it.connect(InetSocketAddress(host, port), 500) }; true }.getOrDefault(false)
             if (ok) {
-                client.notify(envelope { jobProgress = jobProgress { jobId = "worker"; fraction = 1f; note = "listening:$port" } })
-                MeshState.log("worker listening on :$port")
+                client.notify(envelope { jobProgress = jobProgress { jobId = "worker"; fraction = 1f; note = "listening:$host:$port"; this.planId = planId } })
+                MeshState.log("worker listening on $host:$port")
                 return
             }
             kotlinx.coroutines.delay(500)
         }
-        MeshState.log("✗ worker did not start listening on :$port")
+        MeshState.log("✗ worker did not start listening on $host:$port")
     }
 
     private fun acquireLocks() {
+        releaseLocks()
         val pm = getSystemService(PowerManager::class.java)
         wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "meshai:worker").also { it.acquire(6 * 60 * 60 * 1000L) }
         val wm = applicationContext.getSystemService(WifiManager::class.java)
@@ -121,6 +130,7 @@ class MeshService : Service() {
         const val ACTION_JOIN = "ai.meshai.JOIN"
         const val ACTION_LEAVE = "ai.meshai.LEAVE"
         const val ACTION_STOP_PROCESS = "ai.meshai.STOP_PROCESS"
+        const val ACTION_BENCH = "ai.meshai.BENCH"
         const val EXTRA_PAYLOAD = "payload"
         fun join(ctx: Context, payload: String) = ctx.startForegroundService(Intent(ctx, MeshService::class.java).setAction(ACTION_JOIN).putExtra(EXTRA_PAYLOAD, payload))
         fun leave(ctx: Context) = ctx.startForegroundService(Intent(ctx, MeshService::class.java).setAction(ACTION_LEAVE))

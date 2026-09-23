@@ -1,11 +1,14 @@
-//! Owns the llama.cpp child processes: the host `llama-server` (when the laptop is host),
-//! local `ggml-rpc-server` workers (laptop-as-worker or simulated phones).
+//! Owns the llama.cpp child processes: the host `llama-server` (when the laptop is host), the
+//! local `ggml-rpc-server` (laptop-as-worker for a phone host) and simulated-phone workers.
 //!
-//! llama.cpp semantics that the args below depend on:
-//! * `--rpc a:p,b:p` registers remote devices in that order;
-//! * `-ngl N` offloads the *last* N transformer layers to those devices, host CPU keeps the rest
-//!   plus embeddings/output;
-//! * `--tensor-split w1,w2` divides the offloaded layers among the RPC devices in `--rpc` order.
+//! llama.cpp semantics the args depend on (verified against `load_tensors: layer N assigned to
+//! device` debug output on 2026-09-24, see docs/BENCHMARKS.md):
+//! * `--rpc a:p,b:p` registers remote devices, in that order, ahead of the CPU;
+//! * llama.cpp counts the output head as layer `n_layer`, so `-ngl N` offloads the last N of
+//!   (n_layer + 1) entries. We pass `ngl + 1` so exactly `ngl` real layers move, and pin
+//!   `output.weight` back to the host with `--override-tensor`;
+//! * `--tensor-split f1,f2` places offloaded entries by cumulative fraction, so worker k gets
+//!   `layers_k / (ngl+1)` and the last worker one extra slot for the head entry.
 
 use crate::state::{now_ms, AppState};
 use meshcore::planner::{Mode, Plan, Role};
@@ -21,27 +24,80 @@ pub struct LlamaArgs {
     pub args: Vec<String>,
     pub host_is_local: bool,
     pub workers: Vec<(String, u16)>,
+    pub ngl: u32,
+}
+
+/// Pure derivation of llama-server arguments from a plan (unit-tested below).
+pub fn derive_args(
+    model_path: &str,
+    n_ctx: u32,
+    mode: &Mode,
+    worker_layers: &[u32],
+    worker_addrs: &[(String, u16)],
+) -> (Vec<String>, u32) {
+    let ngl: u32 = worker_layers.iter().sum();
+    let mut args = vec![
+        "-m".into(),
+        model_path.to_string(),
+        "-c".into(),
+        n_ctx.to_string(),
+        "--host".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        meshcore::HOST_LLAMA_PORT.to_string(),
+        "--jinja".into(),
+        "--metrics".into(),
+        // Demo default: answer directly (Qwen3 thinking off, D017).
+        "--reasoning".into(),
+        "off".into(),
+    ];
+    if *mode == Mode::LayerSplit && !worker_addrs.is_empty() {
+        args.push("--rpc".into());
+        args.push(
+            worker_addrs
+                .iter()
+                .map(|(a, p)| format!("{a}:{p}"))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        args.push("-ngl".into());
+        args.push((ngl + 1).to_string());
+        args.push("--override-tensor".into());
+        args.push("output\\.weight=CPU".into());
+        if worker_addrs.len() > 1 {
+            let total = (ngl + 1) as f64;
+            let split: Vec<String> = worker_layers
+                .iter()
+                .enumerate()
+                .map(|(i, &n)| {
+                    let n = if i + 1 == worker_layers.len() {
+                        n + 1
+                    } else {
+                        n
+                    };
+                    format!("{:.6}", n as f64 / total)
+                })
+                .collect();
+            args.push("--tensor-split".into());
+            args.push(split.join(","));
+        }
+    } else {
+        args.push("-ngl".into());
+        args.push("0".into());
+    }
+    (args, ngl)
 }
 
 pub fn llama_args(st: &AppState, plan: &Plan) -> anyhow::Result<LlamaArgs> {
     let model = st
         .model(&plan.model)
-        .or_else(|| {
-            st.models
-                .read()
-                .unwrap()
-                .iter()
-                .find(|m| m.info.name == plan.model)
-                .cloned()
-        })
         .ok_or_else(|| anyhow::anyhow!("model missing"))?;
     let devices = st.devices.read().unwrap();
     let host = devices
         .get(&plan.host_id)
         .ok_or_else(|| anyhow::anyhow!("host device missing"))?;
     let mut workers: Vec<(String, u16)> = Vec::new();
-    let mut split: Vec<String> = Vec::new();
-    let mut ngl = 0u32;
+    let mut layer_counts: Vec<u32> = Vec::new();
     for p in plan.placements.iter().filter(|p| p.role == Role::Worker) {
         let d = devices
             .get(&p.device_id)
@@ -52,48 +108,21 @@ pub fn llama_args(st: &AppState, plan: &Plan) -> anyhow::Result<LlamaArgs> {
             d.addr.clone().unwrap_or_default()
         };
         workers.push((addr, d.rpc_port));
-        split.push(format!("{:.4}", p.split_weight));
-        ngl += p.layer_end - p.layer_start;
+        layer_counts.push(p.layer_end - p.layer_start);
     }
-    let mut args = vec![
-        "-m".into(),
-        st.models_dir.join(&model.file).display().to_string(),
-        "-c".into(),
-        plan.n_ctx.to_string(),
-        "--host".into(),
-        "127.0.0.1".into(),
-        "--port".into(),
-        meshcore::HOST_LLAMA_PORT.to_string(),
-        "--jinja".into(),
-        "--metrics".into(),
-        // Demo default: answer directly (Qwen3 thinking off). Per-request override is a Phase-2 knob.
-        "--reasoning".into(),
-        "off".into(),
-    ];
-    if plan.mode == Mode::LayerSplit && !workers.is_empty() {
-        args.push("--rpc".into());
-        args.push(
-            workers
-                .iter()
-                .map(|(a, p)| format!("{a}:{p}"))
-                .collect::<Vec<_>>()
-                .join(","),
-        );
-        args.push("-ngl".into());
-        args.push(ngl.to_string());
-        if workers.len() > 1 {
-            args.push("--tensor-split".into());
-            args.push(split.join(","));
-        }
-    } else {
-        args.push("-ngl".into());
-        args.push("0".into());
-    }
+    let (args, ngl) = derive_args(
+        &st.models_dir.join(&model.file).display().to_string(),
+        plan.n_ctx,
+        &plan.mode,
+        &layer_counts,
+        &workers,
+    );
     Ok(LlamaArgs {
         program: st.llama_bin.join("llama-server").display().to_string(),
         args,
         host_is_local: host.is_local,
         workers,
+        ngl,
     })
 }
 
@@ -104,7 +133,7 @@ pub fn spawn_rpc_server(
     threads: Option<usize>,
     cache: bool,
 ) -> anyhow::Result<Child> {
-    // NB: upstream ggml-rpc-server flags are only -t/-d/-H/-p/-c (no memory cap); memory limits live in the planner.
+    // NB: upstream ggml-rpc-server flags are only -t/-d/-H/-p/-c (no memory cap); limits live in the planner.
     let mut cmd = Command::new(bin.join("ggml-rpc-server"));
     cmd.arg("-H").arg(host).arg("-p").arg(port.to_string());
     if cache {
@@ -119,10 +148,31 @@ pub fn spawn_rpc_server(
     Ok(cmd.spawn()?)
 }
 
-/// Start the plan: spawn local workers if any placement is a local worker, spawn the host
-/// llama-server if the host is local, otherwise push the plan to the phone host.
+fn set_error(st: &AppState, msg: &str) {
+    st.push_log(msg.to_string());
+    let mut r = st.run.write().unwrap();
+    r.status = "error".into();
+    r.error = Some(msg.to_string());
+}
+
+/// Start the plan. Order (M3): stop the previous run → push to workers → wait until every remote
+/// worker reports its RPC port listening for *this* plan id → TCP-check every worker → start the
+/// host (local llama-server, or push the plan to the phone host). Any failure tears down what
+/// was started. Callers hold `st.run_lock`.
 pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
     stop(&st).await;
+    match start_inner(st.clone(), plan).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            set_error(&st, &format!("start failed: {e}"));
+            stop_processes(&st).await;
+            Err(e)
+        }
+    }
+}
+
+async fn start_inner(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
+    let plan_id = format!("plan-{}", now_ms());
     st.set_roles_from_plan(&plan);
     *st.plan.write().unwrap() = Some(plan.clone());
     {
@@ -131,12 +181,13 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
             status: "starting".into(),
             host_id: Some(plan.host_id.clone()),
             model: Some(plan.model.clone()),
+            plan_id: Some(plan_id.clone()),
             started_ms: Some(now_ms()),
             ..Default::default()
         };
     }
     tracing::info!(
-        "start: plan {} mode {:?} host {}",
+        "start {plan_id}: {} mode {:?} host {}",
         plan.model,
         plan.mode,
         plan.host_id
@@ -146,43 +197,27 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
         .chain(la.args.iter().cloned())
         .collect();
 
-    // Local worker (laptop as compute for a phone host)
+    // Local worker (laptop as compute for a phone host): bind to the LAN address of this machine.
     if plan
         .placements
         .iter()
         .any(|p| p.role == Role::Worker && p.device_id == "local")
     {
-        let child = spawn_rpc_server(&st.llama_bin, "0.0.0.0", meshcore::RPC_PORT, None, true)?;
+        let bind = local_ip_address::local_ip()
+            .map(|i| i.to_string())
+            .unwrap_or_else(|_| "127.0.0.1".into());
+        let child = spawn_rpc_server(&st.llama_bin, &bind, meshcore::RPC_PORT, None, true)?;
         st.push_log(format!(
-            "local worker: ggml-rpc-server on :{} (pid {})",
+            "local worker: ggml-rpc-server on {bind}:{} (pid {})",
             meshcore::RPC_PORT,
             child.id().unwrap_or(0)
         ));
         *st.local_worker.lock().unwrap() = Some(child);
     }
-    // Push the plan to every remote participant (phones start rpc-server / llama-server themselves)
-    {
-        let mut d = st.devices.write().unwrap();
-        for dev in d.values_mut() {
-            if !dev.is_local && dev.kind != crate::state::DeviceKind::Sim {
-                dev.worker_ready = false;
-            }
-        }
-    }
-    let pplan = to_proto(&st, &plan);
-    for p in plan
-        .placements
-        .iter()
-        .filter(|p| p.role != Role::Rejected && p.device_id != "local")
-    {
-        let _ = st.plan_tx.send((p.device_id.clone(), pplan.clone()));
-    }
 
-    // llama.cpp aborts the whole process if an RPC server is unreachable, so wait for every worker first.
-    tracing::info!("start: waiting for {} worker(s)", la.workers.len());
-    // Remote phones report "worker listening" over the control plane first: a bare TCP probe is not
-    // enough because adb/port forwards accept connections before anything listens behind them.
-    let remote_ids: Vec<String> = plan
+    // Push the plan to remote *workers* first.
+    let pplan = to_proto(&st, &plan, &plan_id);
+    let remote_workers: Vec<String> = plan
         .placements
         .iter()
         .filter(|p| p.role == Role::Worker && p.device_id != "local")
@@ -196,17 +231,31 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
         })
         .map(|p| p.device_id.clone())
         .collect();
-    for id in &remote_ids {
+    {
+        let mut d = st.devices.write().unwrap();
+        for id in &remote_workers {
+            if let Some(dev) = d.get_mut(id) {
+                dev.worker_ready_plan = None;
+                dev.has_plan = true;
+            }
+        }
+    }
+    for id in &remote_workers {
+        let _ = st.plan_tx.send((id.clone(), pplan.clone()));
+    }
+    // Remote phones report "worker listening" for this plan id (M2): a bare TCP probe is not
+    // enough because adb/port forwards accept connections before anything listens behind them.
+    for id in &remote_workers {
         let mut ok = false;
         for _ in 0..90 {
-            if st
+            let ready = st
                 .devices
                 .read()
                 .unwrap()
                 .get(id)
-                .map(|d| d.worker_ready)
-                .unwrap_or(false)
-            {
+                .map(|d| d.worker_ready_plan.as_deref() == Some(plan_id.as_str()))
+                .unwrap_or(false);
+            if ready {
                 ok = true;
                 break;
             }
@@ -215,14 +264,11 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
         if ok {
             st.push_log(format!("worker ready on device {id}"));
         } else {
-            let msg = format!("device {id} never reported its RPC worker listening (45 s) — is the app in the foreground?");
-            st.push_log(msg.clone());
-            let mut r = st.run.write().unwrap();
-            r.status = "error".into();
-            r.error = Some(msg.clone());
-            anyhow::bail!(msg);
+            anyhow::bail!("device {id} never reported its RPC worker listening (45 s) — is the app in the foreground?");
         }
     }
+    // llama.cpp aborts the whole process if an RPC server is unreachable, so TCP-check every worker.
+    tracing::info!("start {plan_id}: checking {} worker(s)", la.workers.len());
     for (addr, port) in &la.workers {
         let target = format!("{addr}:{port}");
         let mut ok = false;
@@ -243,12 +289,7 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
         if ok {
             st.push_log(format!("worker reachable: {target}"));
         } else {
-            let msg = format!("worker {target} not reachable after 20 s — is its RPC server running on the paired link?");
-            st.push_log(msg.clone());
-            let mut r = st.run.write().unwrap();
-            r.status = "error".into();
-            r.error = Some(msg.clone());
-            anyhow::bail!(msg);
+            anyhow::bail!("worker {target} not reachable after 20 s — is its RPC server running on the paired link?");
         }
     }
 
@@ -264,7 +305,7 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("spawn llama-server: {e}"))?;
         let stderr = child.stderr.take();
         let stdout = child.stdout.take();
-        *st.child.lock().unwrap() = Some(child);
+        *st.host_pid.lock().unwrap() = child.id();
         st.run.write().unwrap().status = "loading".into();
         for pipe in [
             stdout.map(|p| Box::pin(p) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>),
@@ -284,6 +325,26 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
                 }
             });
         }
+        // Watch the child for its whole life (H6): an exit after "ready" is an error, not silence.
+        let st2 = st.clone();
+        let pid_here = child.id();
+        tokio::spawn(async move {
+            let status = child.wait().await;
+            let still_ours = *st2.host_pid.lock().unwrap() == pid_here;
+            if still_ours {
+                *st2.host_pid.lock().unwrap() = None;
+                let s = st2.run.read().unwrap().status.clone();
+                if s == "loading" || s == "ready" || s == "starting" {
+                    let msg = match status {
+                        Ok(c) => format!("llama-server exited ({c})"),
+                        Err(e) => format!("llama-server wait failed: {e}"),
+                    };
+                    set_error(&st2, &msg);
+                    stop_processes(&st2).await;
+                    st2.run.write().unwrap().endpoint = None;
+                }
+            }
+        });
         let st2 = st.clone();
         tokio::spawn(async move {
             wait_ready(
@@ -293,7 +354,11 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
             .await
         });
     } else {
-        // Phone host: llama-server runs there on HOST_LLAMA_PORT; we proxy to it.
+        // Phone host: push its plan only now that its workers are up; it runs llama-server on :8081.
+        if let Some(dev) = st.devices.write().unwrap().get_mut(&plan.host_id) {
+            dev.has_plan = true;
+        }
+        let _ = st.plan_tx.send((plan.host_id.clone(), pplan.clone()));
         let addr = st
             .devices
             .read()
@@ -328,6 +393,9 @@ async fn wait_ready(st: Arc<AppState>, endpoint: String) {
         {
             if r.status().is_success() {
                 let mut run = st.run.write().unwrap();
+                if run.status != "loading" {
+                    return;
+                }
                 run.status = "ready".into();
                 run.ready_ms = Some(now_ms());
                 run.endpoint = Some(endpoint.clone());
@@ -339,39 +407,52 @@ async fn wait_ready(st: Arc<AppState>, endpoint: String) {
                 return;
             }
         }
-        // did the local child die?
-        if let Some(c) = st.child.lock().unwrap().as_mut() {
-            if let Ok(Some(code)) = c.try_wait() {
-                let mut run = st.run.write().unwrap();
-                run.status = "error".into();
-                run.error = Some(format!("llama-server exited with {code}"));
-                return;
-            }
-        }
         if std::time::Instant::now() > deadline {
-            let mut run = st.run.write().unwrap();
-            run.status = "error".into();
-            run.error = Some("timeout waiting for /health".into());
+            set_error(&st, "timeout waiting for /health");
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 }
 
+async fn kill_pid_and_wait(pid: u32) {
+    let _ = Command::new("kill").arg(pid.to_string()).output().await;
+    for _ in 0..30 {
+        if !Path::new(&format!("/proc/{pid}")).exists() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let _ = Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .output()
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+}
+
+/// Kill the host llama-server and the local worker and wait for them to exit (M10).
+async fn stop_processes(st: &Arc<AppState>) {
+    let pid = st.host_pid.lock().unwrap().take();
+    if let Some(pid) = pid {
+        kill_pid_and_wait(pid).await;
+    }
+    let lw = st.local_worker.lock().unwrap().take();
+    if let Some(mut c) = lw {
+        let _ = c.start_kill();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), c.wait()).await;
+    }
+}
+
 pub async fn stop(st: &Arc<AppState>) {
-    if let Some(mut c) = st.child.lock().unwrap().take() {
-        let _ = c.start_kill();
-    }
-    if let Some(mut c) = st.local_worker.lock().unwrap().take() {
-        let _ = c.start_kill();
-    }
-    // tell remote participants to stop (empty plan)
+    stop_processes(st).await;
+    // Withdraw the plan from every remote device that received one (H2): they kill their processes.
     let ids: Vec<String> = st
         .devices
         .read()
         .unwrap()
         .values()
-        .filter(|d| !d.is_local && d.role != "idle")
+        .filter(|d| !d.is_local && d.has_plan)
         .map(|d| d.id.clone())
         .collect();
     for id in ids {
@@ -386,21 +467,24 @@ pub async fn stop(st: &Arc<AppState>) {
     let mut d = st.devices.write().unwrap();
     for dev in d.values_mut() {
         dev.role = "idle".into();
+        dev.has_plan = false;
+        dev.worker_ready_plan = None;
     }
     let mut r = st.run.write().unwrap();
     r.status = "idle".into();
     r.endpoint = None;
+    r.plan_id = None;
     *st.plan.write().unwrap() = None;
 }
 
-pub fn to_proto(st: &AppState, plan: &Plan) -> meshcore::proto::Plan {
+pub fn to_proto(st: &AppState, plan: &Plan, plan_id: &str) -> meshcore::proto::Plan {
     use meshcore::proto as p;
     let devices = st.devices.read().unwrap();
     let my_ip = local_ip_address::local_ip()
         .map(|i| i.to_string())
         .unwrap_or_else(|_| "127.0.0.1".into());
     p::Plan {
-        plan_id: format!("plan-{}", now_ms()),
+        plan_id: plan_id.to_string(),
         model_name: plan.model.clone(),
         model_sha: String::new(),
         mode: match plan.mode {
@@ -442,5 +526,64 @@ pub fn to_proto(st: &AppState, plan: &Plan) -> meshcore::proto::Plan {
         model_file: plan.model.clone(),
         coordinator: format!("{my_ip}:{}", meshcore::API_PORT),
         n_threads: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arg_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        args.iter()
+            .position(|a| a == flag)
+            .map(|i| args[i + 1].as_str())
+    }
+
+    #[test]
+    fn single_device_keeps_everything_on_host() {
+        let (args, ngl) = derive_args("m.gguf", 2048, &Mode::Single, &[], &[]);
+        assert_eq!(ngl, 0);
+        assert_eq!(arg_after(&args, "-ngl"), Some("0"));
+        assert!(!args.iter().any(|a| a == "--rpc"));
+        assert_eq!(arg_after(&args, "--reasoning"), Some("off"));
+    }
+
+    #[test]
+    fn split_offloads_exactly_the_worker_layers_and_pins_the_head() {
+        // Qwen3-0.6B: 28 layers; host 0-3, w1 4-14 (11), w2 15-27 (13). Verified against llama.cpp
+        // `layer N assigned to device` output: CPU 0-3, RPC0 4-14, RPC1 15-27 (+ head pinned to CPU).
+        let workers = vec![
+            ("10.0.0.2".to_string(), 50052u16),
+            ("10.0.0.3".to_string(), 50052),
+        ];
+        let (args, ngl) = derive_args("m.gguf", 2048, &Mode::LayerSplit, &[11, 13], &workers);
+        assert_eq!(ngl, 24);
+        assert_eq!(
+            arg_after(&args, "-ngl"),
+            Some("25"),
+            "ngl+1: the output head counts as a layer"
+        );
+        assert_eq!(
+            arg_after(&args, "--override-tensor"),
+            Some("output\\.weight=CPU")
+        );
+        assert_eq!(
+            arg_after(&args, "--rpc"),
+            Some("10.0.0.2:50052,10.0.0.3:50052")
+        );
+        // 11/25 and (13+1)/25
+        assert_eq!(
+            arg_after(&args, "--tensor-split"),
+            Some("0.440000,0.560000")
+        );
+    }
+
+    #[test]
+    fn single_worker_has_no_tensor_split() {
+        let workers = vec![("10.0.0.2".to_string(), 50052u16)];
+        let (args, ngl) = derive_args("m.gguf", 4096, &Mode::LayerSplit, &[22], &workers);
+        assert_eq!(ngl, 22);
+        assert_eq!(arg_after(&args, "-ngl"), Some("23"));
+        assert!(!args.iter().any(|a| a == "--tensor-split"));
     }
 }

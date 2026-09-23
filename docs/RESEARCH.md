@@ -31,3 +31,12 @@
 **DECISION** A + B (measure both; B default when phone is on the desk) · **CONFIDENCE** Medium
 **WHY NOT C/D?** no practical Linux-laptop NAN/P2P stack; keep for phone↔phone in Phase 3.
 **CONSEQUENCE** D008.
+
+## R004 — Will Android kill the llama.cpp child process (D010)?            (2026-09-24)
+**QUESTION** Does Android 12+ terminate an app's forked native process even while the app holds a foreground service?
+**CANDIDATES** A child process from `nativeLibraryDir` (D010, current) · B in-process `ggml_backend_rpc_start_server` via JNI (D010 Phase 2)
+**OFFICIAL EVIDENCE** [T1] Android 12 introduced the *phantom process* limit: apps may keep at most 32 phantom (forked) processes system-wide and the OS kills phantom processes that use excessive CPU while the app is in the background — https://developer.android.com/about/versions/12/behavior-changes-12 (recalled from memory, **not re-fetched today**: Medium confidence)
+**REAL-WORLD EVIDENCE** [T7] Termux users report "signal 9" kills of long-running shells on Android 12+ unless `settings put global settings_enable_monitor_phantom_procs false` (needs adb) — Termux issue tracker (recalled, Medium)
+**UNKNOWN** Whether a top-app + `connectedDevice` FGS keeps the child out of the "excessive CPU in background" rule for a 10-minute sustained run on the POCO F5 (Android 15) with the screen on and off → **T006** must include this.
+**DECISION** keep A for the hackathon, treat B as the fix if T006 shows kills · **CONFIDENCE** Low until measured
+**CONSEQUENCE** RISKS K13; the dashboard must stay top-app during a plan (already required for cpusets).

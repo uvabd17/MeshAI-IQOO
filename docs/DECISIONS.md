@@ -37,3 +37,24 @@ Format: **D### — title** · date · context · decision · alternatives reject
 
 ## D012 — Demo model set
 2026-09-24 · Cloud reference: pluggable OpenAI-compatible provider (default Claude Sonnet 5). Laptop baseline: Qwen3-8B Q4_K_M (5.0 GB, 36 layers). Budget-laptop story: gpt-oss-20b MXFP4 (12.1 GB, 24 layers) with laptop capped at 6 GB. Mesh headline: Qwen3-Coder-30B-A3B Q4_K_M (18.6 GB, 48 layers). Test: Qwen3-0.6B Q8_0. Status: accepted.
+
+## D013 — Pairing v1: one-time QR token → per-device secret; Noise XX deferred (supersedes the transport part of D002 for v1)
+2026-09-24 · The reviewer found reconnects accepted a self-reported device id alone and the pairing token was served by `/api/state`. **Decision:** the coordinator answers a valid token with a random 32-byte device secret (`Paired`), persists it in `state/paired.json`, and every reconnect must present it (constant-time compare). The offer/token is returned only by `POST /api/pair/offer` to the local admin and never appears in `/api/state` or the mirror. Control-plane *encryption* stays a Phase-2 item; v1 relies on the private hotspot/USB link. Status: accepted.
+
+## D014 — Cloud mirror is an explicit, opt-in exception to "no telemetry off-device"
+2026-09-24 · The user asked for an internet-ready demo. **Decision:** `meshd mirror` exists only as a read-only admin (GET `/admin`, `/api/state`, `/api/runs`; POST `/api/relay/state`); the coordinator pushes a *stripped* snapshot (hashed device ids, no addresses, no paths, no process args, no token) only when `--push-to` is set; TLS is required before any real-network use; nothing else (models, weights, prompts, RPC) leaves the mesh. Off by default. Status: accepted, pending user sign-off for the live deployment (T050).
+
+## D015 — Android floor raised to dotprod **+ i8mm** (amends D004)
+2026-09-24 · The shipped arm64 build is compiled with `+i8mm` (`smmla` present in `libggml-cpu.so`); a dotprod-only phone would SIGILL. Rather than ship a slower dotprod-only build for the hackathon, the tier gate now requires both. Cortex-A78/X1 (2021+) and newer qualify; A76-class cores do not. Revisit with `GGML_CPU_ALL_VARIANTS` runtime dispatch in Phase 2. Status: accepted.
+
+## D016 — Headroom constants until measured
+2026-09-24 · Laptop reserves 2 GB; the phone reports 1.5 GB (`Profiler.HEADROOM`) and the coordinator uses whatever the device reports. Both are guesses to be replaced by the kill-threshold measurement (T006). llama.cpp compute/RPC buffers (~25–30 MiB per device at 2k ctx on the 0.6B) are not yet modelled. Status: provisional.
+
+## D017 — Thinking off by default for the demo
+2026-09-24 · Qwen3 spends the whole token budget in reasoning unless told otherwise. `llama-server --reasoning off` on every host (laptop and phone). A per-request toggle is a Phase-2 admin control. Status: accepted.
+
+## D018 — Android v1 without UniFFI/meshcore.so (amends D003)
+2026-09-24 · The v1 phone app re-implements framing and plan handling in Kotlin (~700 lines) instead of binding a Rust `meshcore.so`; the wire format is the shared `proto/mesh.proto`, so both sides stay in sync through the schema, and the llama.cpp argument rule (ngl+1, head pinned) is duplicated in `LlamaRunner.startHost` with a comment pointing at `supervisor.rs`. UniFFI binding returns when the planner needs to run on a phone host. Status: accepted.
+
+## D019 — x86_64 Android build is test-only
+2026-09-24 · Built without AVX2/FMA/F16C so it runs on the emulator's CPU; never shipped to users (the floor is arm64). Status: accepted.

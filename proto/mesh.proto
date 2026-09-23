@@ -20,6 +20,7 @@ message Envelope {
     JobResult     job_result     = 16;
     Heartbeat     heartbeat      = 17;
     Bye           bye            = 18;
+    Paired        paired         = 19;
   }
 }
 
@@ -29,7 +30,12 @@ message Hello {
   string display_name   = 2;
   bytes  one_time_token = 3;     // from the QR; consumed on first Hello
   uint32 rpc_port       = 4;     // where this worker will expose ggml RPC once admitted (0 = not a worker)
+  bytes  device_secret  = 5;     // issued in Paired at first pairing; required on every reconnect
 }
+
+// Coordinator → device after a successful one-time-token redeem. The device stores the secret and
+// presents it in Hello.device_secret from then on (a lost secret means re-pairing with a new QR).
+message Paired { bytes device_secret = 1; string mesh_id = 2; }
 
 // ---- what a device is ----------------------------------------------------------------
 enum Tier { TIER_UNSUPPORTED = 0; TIER_B = 1; TIER_A = 2; TIER_S = 3; }
@@ -102,7 +108,7 @@ message Plan {
 
 // ---- background jobs ----------------------------------------------------------------
 message JobSubmit  { string job_id = 1; string kind = 2; string title = 3; bytes payload = 4; }  // kind: "tests" | "review" | "docs" | "logs"
-message JobProgress{ string job_id = 1; float fraction = 2; string note = 3; }
+message JobProgress{ string job_id = 1; float fraction = 2; string note = 3; string plan_id = 4; }
 message JobResult  { string job_id = 1; bool ok = 2; bytes output = 3; uint32 tokens = 4; float seconds = 5; }
 
 message Heartbeat  { uint64 t_unix_ms = 1; }

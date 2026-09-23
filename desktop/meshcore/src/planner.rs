@@ -7,6 +7,7 @@
 //!    (embeddings, output head) plus its share of layers.
 //! 3. A device is rejected — with a reason — if its RTT p95 is too high, it is too hot, its
 //!    battery is below the floor, or it brings less memory than one layer.
+//!
 //! Every placement carries a human-readable reason; the admin panel shows them verbatim.
 
 use crate::gguf::ModelInfo;
@@ -165,14 +166,18 @@ pub fn plan(
         .copied()
         .filter(|d| d.usable_bytes >= needed)
         .collect();
+    // Preferred host first, then measured speed, then the local device (a tie at 0 tok/s must not
+    // silently ship the model to a phone just because its id sorts first).
     single.sort_by(|a, b| {
         let pa = policy.prefer_host.as_deref() == Some(&a.device_id);
         let pb = policy.prefer_host.as_deref() == Some(&b.device_id);
-        pb.cmp(&pa).then(
-            b.bench_tps
-                .partial_cmp(&a.bench_tps)
-                .unwrap_or(std::cmp::Ordering::Equal),
-        )
+        pb.cmp(&pa)
+            .then(
+                b.bench_tps
+                    .partial_cmp(&a.bench_tps)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(b.is_local.cmp(&a.is_local))
     });
     if let Some(d) = single.first() {
         let mut placements = vec![Placement {
@@ -237,7 +242,7 @@ pub fn plan(
         .copied()
         .filter(|d| d.device_id != host.device_id)
         .collect();
-    others.sort_by(|a, b| b.usable_bytes.cmp(&a.usable_bytes));
+    others.sort_by_key(|d| std::cmp::Reverse(d.usable_bytes));
 
     let mut chosen: Vec<&DeviceCap> = vec![host];
     let mut pooled = host.usable_bytes;
@@ -275,6 +280,13 @@ pub fn plan(
     let cap_total: u64 = caps.iter().sum();
     let layer_total: u64 = model.layer_bytes.iter().sum::<u64>() + kv_total;
 
+    // The host must hold the non-layer tensors before it gets any layer.
+    if caps[0] == 0 {
+        return Err(PlanError::DoesNotFit {
+            needed,
+            available: pooled,
+        });
+    }
     let mut next_layer = 0u32;
     for (i, d) in chosen.iter().enumerate() {
         let is_last = i + 1 == chosen.len();
@@ -287,8 +299,8 @@ pub fn plan(
             if !is_last && bytes + lb > target.min(caps[i]) && next_layer > start {
                 break;
             }
-            if bytes + lb > caps[i] && next_layer > start {
-                break;
+            if bytes + lb > caps[i] {
+                break; // never assign a layer the device cannot hold (M5), even as its first
             }
             bytes += lb;
             next_layer += 1;

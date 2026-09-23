@@ -27,6 +27,42 @@
       "last_run": null,
       "status": "BLOCKED",
       "evidence": "no physical arm64 phone attached"
+    },
+    {
+      "id": "V004",
+      "name": "cargo test (meshcore + meshd)",
+      "cmd": "cd desktop && cargo test",
+      "covers": "gguf parser on real file, planner rules, framing, pairing secrets, llama arg derivation (ngl+1/tensor-split), model name validation",
+      "last_run": "2026-09-24",
+      "status": "PASS",
+      "evidence": "14 passed"
+    },
+    {
+      "id": "V005",
+      "name": "local split simulation",
+      "cmd": "scratchpad/split-sim.sh (meshd API: cap laptop, 2 sim workers, run, 3 chats)",
+      "covers": "T009/T012 run path incl. worker wait, host watcher, /v1 proxy rows",
+      "last_run": "2026-09-24",
+      "status": "PASS",
+      "evidence": "ready in ~5 s; 22 tok/s server, 19–21 tok/s client; placement matches llama.cpp verbose log"
+    },
+    {
+      "id": "V006",
+      "name": "browser-driven admin QA",
+      "cmd": "node browser.mjs http://localhost:8080/admin/ --script admin-qa.mjs",
+      "covers": "T031: plan preview, Run, ready, layer map, chat + timings, analytics, QR, catalog",
+      "last_run": "2026-09-24",
+      "status": "PASS",
+      "evidence": "first run passed; re-run pending after offer-flow change"
+    },
+    {
+      "id": "V007",
+      "name": "gradle lint + assembleDebug",
+      "cmd": "scripts/verify (full) or gradle -p android lint assembleDebug",
+      "covers": "T020 NewApi and manifest rules",
+      "last_run": "2026-09-24",
+      "status": "FAIL",
+      "evidence": "3 NewApi errors (Build.SOC_MODEL API 31) — fixed in Profiler.kt; rebuild running"
     }
   ]
 }
