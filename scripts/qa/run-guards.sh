@@ -29,6 +29,13 @@ code=$(curl -s -o "$OUT/refused2.json" -w '%{http_code}' -m 20 -H 'content-type:
 check "$code" 422 "n_ctx beyond n_ctx_train → 422 ($(jq -r .error "$OUT/refused2.json" | cut -c1-60))"; check "$(status)" ready "run still ready after the n_ctx refusal"
 code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 -H 'content-type: application/json' -X POST localhost:8080/api/run -d '{"model":"no-such.gguf","n_ctx":2048}')
 check "$code" 422 "unknown model → 422"; check "$(status)" ready "run still ready after the unknown-model refusal"
+BIG="${BIG_MODEL:-Qwen3-8B-Q4_K_M.gguf}"
+if api localhost:8080/api/state | jq -e --arg m "$BIG" '.models[] | select(.file==$m)' >/dev/null; then
+  code=$(curl -s -o "$OUT/refused3.json" -w '%{http_code}' -m 20 -H 'content-type: application/json' -X POST localhost:8080/api/run -d "{\"model\":\"$BIG\",\"n_ctx\":2048}")
+  check "$code" 422 "shortfall no stop could cure ($BIG on the capped pool) → 422"
+  check "$(grep -c 'previous run stopped' "$OUT/refused3.json")" 0 "…refused WITHOUT stopping the live run"
+  check "$(status)" ready "run still ready after the shortfall refusal"
+else echo "  skip shortfall guard ($BIG not in catalog)"; fi
 check "$(pgrep -x llama-server | wc -l)" 1 "exactly one llama-server alive"
 echo "== forget a member mid-run → run ends with an error, device gone =="
 api -X DELETE "localhost:8080/api/devices/$SIM" >/dev/null; sleep 1

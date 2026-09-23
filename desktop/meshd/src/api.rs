@@ -438,15 +438,12 @@ async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Res
         Ok(dry) if remote_without_lan(&dry) => return refuse(LAN_MSG.into()),
         Ok(_) => {}
         Err(e) => {
-            let memory_related = matches!(
-                e.downcast_ref::<meshcore::planner::PlanError>(),
-                Some(meshcore::planner::PlanError::DoesNotFit { .. })
-                    | Some(meshcore::planner::PlanError::NoDevices)
-            );
-            if !memory_related || st.run.read().unwrap().status == "idle" {
+            // Proceed to the stop only if a run is actually live and what it would free covers the
+            // shortfall; anything else is refused without touching the mesh (round-7 #2, #6).
+            let live = st.run.read().unwrap().plan_id.is_some();
+            if !live || !crate::state::stop_could_cure(&e, st.freeable_bytes()) {
                 return refuse(e.to_string());
             }
-            // It may fit once the current run's memory is released: fall through to the stop.
         }
     }
     supervisor::stop(&st).await;

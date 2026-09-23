@@ -77,7 +77,7 @@ class MeshService : Service() {
             ACTION_JOIN -> intent.getStringExtra(EXTRA_PAYLOAD)?.let { PairingPayload.parse(it) }?.let { p ->
                 acquireLocks(); client.connect(p); MeshState.log("joining ${p.meshId} @ ${p.host}")
             } ?: MeshState.log("✗ invalid pairing payload")
-            ACTION_LEAVE -> { runner.stop(); client.disconnect(); releaseLocks(); MeshState.set { it.copy(role = "idle", planSummary = "", modelFile = "") }; stopSelf() }
+            ACTION_LEAVE -> { linkGen.incrementAndGet(); runner.stop(); client.disconnect(); releaseLocks(); MeshState.set { it.copy(role = "idle", planSummary = "", modelFile = "") }; stopSelf() }
             ACTION_STOP_PROCESS -> userStop()
         }
         return START_STICKY
@@ -93,12 +93,13 @@ class MeshService : Service() {
      * prepared — so it never waits on a phone that gave up.
      */
     private fun userStop() {
+        val gen = linkGen.incrementAndGet() // an arm() that lands after this stop must not re-enable a start (round-7 #3)
+        val uiRoleBefore = MeshState.ui.value.role // read BEFORE the reset (round-7 #1)
+        val applying = MeshState.currentPlan?.takeIf { it.planId != "stop" }?.planId
         val had = runner.stop()
-        val applying = MeshState.currentPlan?.takeIf { it.planId != "stop" }
-        plans.trySend(Queued(Plan.newBuilder().setPlanId("stop").build(), linkGen.get()))
+        plans.trySend(Queued(Plan.newBuilder().setPlanId("stop").build(), gen))
         MeshState.set { it.copy(role = "idle") }
-        val (role, planId) = had ?: (MeshState.ui.value.role to (applying?.planId ?: ""))
-        if (planId.isNotEmpty() && (role == "host" || role == "worker")) report(role, false, "$role stopped from the phone", planId)
+        StopReport.decide(had, uiRoleBefore, applying)?.let { (role, planId) -> report(role, false, "$role stopped from the phone", planId) }
     }
 
     /** Runs on the control client's IO thread: kill now (and disarm the runner), then let the actor settle. */

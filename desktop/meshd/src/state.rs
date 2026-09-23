@@ -510,6 +510,25 @@ impl AppState {
         Ok(())
     }
 
+    /// Bytes the current run holds on devices whose usable memory is *measured* (no override):
+    /// what a stop could give back to the planner. Override devices free nothing (round-7 #2).
+    pub fn freeable_bytes(&self) -> u64 {
+        let Some(plan) = self.plan.read().unwrap().clone() else {
+            return 0;
+        };
+        let d = self.devices.read().unwrap();
+        plan.placements
+            .iter()
+            .filter(|p| p.role != meshcore::planner::Role::Rejected)
+            .filter(|p| {
+                d.get(&p.device_id)
+                    .map(|dev| dev.usable_override_bytes.is_none())
+                    .unwrap_or(false)
+            })
+            .map(|p| p.bytes)
+            .sum()
+    }
+
     pub fn set_roles_from_plan(&self, plan: &Plan) {
         let mut d = self.devices.write().unwrap();
         for dev in d.values_mut() {
@@ -696,6 +715,56 @@ pub fn qr_terminal(payload: &str) -> String {
         .quiet_zone(true)
         .module_dimensions(2, 1)
         .build()
+}
+
+/// Whether stopping the current run could turn this dry-run planning failure into success: only a
+/// pure memory shortfall no larger than what the run would free (round-7 #2). `NoDevices` may come
+/// from thermal/battery/RTT/tier rejections that a stop cannot cure, so it never proceeds.
+pub fn stop_could_cure(e: &anyhow::Error, freeable: u64) -> bool {
+    match e.downcast_ref::<meshcore::planner::PlanError>() {
+        Some(meshcore::planner::PlanError::DoesNotFit { needed, available }) => {
+            *needed <= available.saturating_add(freeable)
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::stop_could_cure;
+    use meshcore::planner::PlanError;
+
+    #[test]
+    fn shortfall_within_what_the_run_frees_may_stop() {
+        let e = anyhow::Error::from(PlanError::DoesNotFit {
+            needed: 10,
+            available: 5,
+        });
+        assert!(stop_could_cure(&e, 6));
+        assert!(stop_could_cure(&e, 5));
+    }
+
+    #[test]
+    fn shortfall_beyond_what_the_run_frees_never_stops() {
+        let e = anyhow::Error::from(PlanError::DoesNotFit {
+            needed: 10,
+            available: 5,
+        });
+        assert!(!stop_could_cure(&e, 4));
+        assert!(!stop_could_cure(&e, 0));
+    }
+
+    #[test]
+    fn non_memory_failures_never_stop() {
+        assert!(!stop_could_cure(
+            &anyhow::Error::from(PlanError::NoDevices),
+            1 << 40
+        ));
+        assert!(!stop_could_cure(
+            &anyhow::anyhow!("model not found"),
+            1 << 40
+        ));
+    }
 }
 
 #[cfg(test)]

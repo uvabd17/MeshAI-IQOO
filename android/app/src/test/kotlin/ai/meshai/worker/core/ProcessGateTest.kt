@@ -62,6 +62,32 @@ class ProcessGateTest {
     }
 
     @Test
+    fun disarmRunsTheKillUnderTheSameLockAsTheSpawn() {
+        // A stop that races a spawn must wait for the spawn and then kill what it produced (round-7 #3).
+        val g = ProcessGate()
+        g.arm { true }
+        val spawned = java.util.concurrent.atomic.AtomicBoolean(false)
+        val killedAfterSpawn = java.util.concurrent.atomic.AtomicBoolean(false)
+        val t = Thread {
+            g.tryStart("worker", "p") { Thread.sleep(300); spawned.set(true); Unit }
+        }
+        t.start(); Thread.sleep(50) // the spawn is now inside the lock
+        val had = g.disarm { killedAfterSpawn.set(spawned.get()) }
+        t.join()
+        assertTrue("disarm must block until the spawn published its process", killedAfterSpawn.get())
+        assertEquals("worker" to "p", had)
+    }
+
+    @Test
+    fun failedSpawnLeavesNothingToReport() {
+        val g = ProcessGate()
+        g.arm { true }
+        g.tryStart("host", "p") { Unit }
+        g.spawnFailed()
+        assertNull(g.disarm())
+    }
+
+    @Test
     fun disarmWithNothingRunningReportsNothing() {
         assertNull(ProcessGate().disarm())
     }
