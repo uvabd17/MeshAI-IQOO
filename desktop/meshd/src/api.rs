@@ -1,9 +1,10 @@
 //! JSON API for the admin panel + static admin files + /v1 proxy.
 //!
 //! Exposure (C1): binds to 127.0.0.1 unless `--lan`; with `--lan` an API token is mandatory and
-//! every mutating route, `/v1` and the pairing offer require it (`x-mesh-token` header or
-//! `Authorization: Bearer`). No CORS layer: the admin is same-origin. Model files are readable
-//! without a token so a phone host can fetch them over the paired link.
+//! every API route except the admin files and model downloads requires it (`x-mesh-token`
+//! header or `Authorization: Bearer`). No CORS layer. Cross-site defences even without a token:
+//! non-GET requests must carry a JSON content type (a browser form cannot), and on localhost the
+//! Host header must be a loopback name (DNS rebinding).
 
 use crate::models;
 use crate::state::AppState;
@@ -42,7 +43,7 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/api/sim/workers", post(api_sim_workers))
         .route("/api/bench", post(api_bench))
         .route("/v1/{*rest}", axum::routing::any(crate::proxy::v1))
-        .layer(middleware::from_fn_with_state(st.clone(), auth))
+        .layer(middleware::from_fn_with_state(st.clone(), guard))
         .with_state(st)
 }
 
@@ -120,20 +121,47 @@ fn presented_token(req: &Request) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Token check for everything that changes state or costs compute. Read-only GETs stay open.
-async fn auth(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+fn host_is_loopback(req: &Request) -> bool {
+    let h = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let h = h.rsplit_once(':').map(|(a, _)| a).unwrap_or(h);
+    h == "localhost" || h == "127.0.0.1" || h == "[::1]" || h == "::1"
+}
+
+/// Request guard: token (when configured), JSON-only mutations, loopback Host on localhost.
+async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    let path = req.uri().path().to_string();
+    let is_get = req.method() == axum::http::Method::GET;
+    let is_static = path.starts_with("/admin") || path == "/";
+    let is_model_file = path.starts_with("/api/models/file/");
+    // DNS-rebinding defence when we only listen on loopback.
+    if !st.lan && !host_is_loopback(&req) {
+        return (StatusCode::FORBIDDEN, "host header is not loopback").into_response();
+    }
+    // A browser form cannot send application/json: block cross-site form POSTs even with no token.
+    if !is_get && !is_static {
+        let ct = req
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !ct.starts_with("application/json") {
+            return (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "content-type must be application/json",
+            )
+                .into_response();
+        }
+    }
     let Some(want) = st.api_token.as_deref() else {
         return next.run(req).await;
     };
-    let path = req.uri().path().to_string();
-    let is_get = req.method() == axum::http::Method::GET;
-    let open = path.starts_with("/admin")
-        || path == "/"
-        || (is_get
-            && (path == "/api/state"
-                || path == "/api/runs"
-                || path == "/api/catalog"
-                || path.starts_with("/api/models/file/")));
+    // Token configured: everything but the admin files, the catalog and model downloads needs it
+    // (with --lan even GET /api/state is sensitive: addresses, args, logs).
+    let open = is_static || is_model_file || (is_get && path == "/api/catalog");
     if open {
         return next.run(req).await;
     }
@@ -213,14 +241,14 @@ async fn api_relay_state(
     Json(serde_json::json!({"ok": true})).into_response()
 }
 
-/// Coordinator side: push a stripped snapshot + runs to the mirror every 2 s (D014).
+/// Coordinator side: push a stripped snapshot + hashed runs to the mirror every 2 s (D014).
 pub async fn push_loop(st: Arc<AppState>) {
     let client = reqwest::Client::new();
     loop {
         let cfg = st.push_to.read().unwrap().clone();
         if let Some((base, token)) = cfg {
             let state = st.state_json(true);
-            let runs = serde_json::json!(*st.runs.read().unwrap());
+            let runs = st.runs_json(true);
             let r = client
                 .post(format!("{base}/api/relay/state"))
                 .bearer_auth(&token)
@@ -269,26 +297,54 @@ async fn api_download(State(st): State<Arc<AppState>>, Json(r): Json<DownloadReq
     }
 }
 
-async fn api_model_file(State(st): State<Arc<AppState>>, Path(file): Path<String>) -> Response {
+/// Serves a catalog file to a phone host; supports a single `Range: bytes=N-` for resume (M7).
+async fn api_model_file(
+    State(st): State<Arc<AppState>>,
+    Path(file): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
     if !models::valid_model_name(&file) {
         return (StatusCode::BAD_REQUEST, "bad name").into_response();
     }
     let p = st.models_dir.join(&file);
-    match tokio::fs::File::open(&p).await {
-        Ok(f) => {
-            let len = f.metadata().await.map(|m| m.len()).unwrap_or(0);
-            let stream = file_stream(f);
-            (
-                [
-                    (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-                    (header::CONTENT_LENGTH, len.to_string()),
-                ],
-                axum::body::Body::from_stream(stream),
-            )
-                .into_response()
-        }
-        Err(_) => (StatusCode::NOT_FOUND, "no such model").into_response(),
+    let Ok(mut f) = tokio::fs::File::open(&p).await else {
+        return (StatusCode::NOT_FOUND, "no such model").into_response();
+    };
+    let len = f.metadata().await.map(|m| m.len()).unwrap_or(0);
+    let start: u64 = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("bytes="))
+        .and_then(|v| v.split('-').next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if start > len {
+        return (StatusCode::RANGE_NOT_SATISFIABLE, "").into_response();
     }
+    use tokio::io::AsyncSeekExt;
+    if start > 0 && f.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "seek").into_response();
+    }
+    let stream = file_stream(f);
+    let mut resp = (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CONTENT_LENGTH, (len - start).to_string()),
+            (header::ACCEPT_RANGES, "bytes".to_string()),
+        ],
+        axum::body::Body::from_stream(stream),
+    )
+        .into_response();
+    if start > 0 {
+        *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
+        resp.headers_mut().insert(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{}/{len}", len.saturating_sub(1))
+                .parse()
+                .unwrap(),
+        );
+    }
+    resp
 }
 
 fn file_stream(
@@ -342,8 +398,8 @@ async fn api_plan(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Re
     }
 }
 
-/// Serialised (M10) and planned *after* the previous run is stopped (M4), so the memory the old
-/// model held is not counted against the new plan.
+/// Stops the previous run, plans against the freed memory (M4), records the new plan and returns
+/// while bring-up continues in the background (N5). Initiation is serialised (M10).
 async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Response {
     let _g = st.run_lock.lock().await;
     supervisor::stop(&st).await;
@@ -465,7 +521,7 @@ async fn api_runs(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
                 .unwrap_or(serde_json::json!([])),
         );
     }
-    Json(serde_json::json!(*st.runs.read().unwrap()))
+    Json(st.runs_json(false))
 }
 
 #[derive(Deserialize)]

@@ -12,6 +12,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive as ctxIsActive
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.InetSocketAddress
@@ -56,7 +57,7 @@ class ControlClient(
                     Socket().use { s ->
                         s.tcpNoDelay = true
                         s.connect(InetSocketAddress(p.host, p.controlPort), 4000)
-                        s.soTimeout = 30_000
+                        s.soTimeout = 45_000 // coordinator heartbeats every 10 s; 45 s of silence = dead link
                         linkLocalAddress = s.localAddress.hostAddress
                         val din = DataInputStream(s.getInputStream().buffered())
                         val dout = DataOutputStream(s.getOutputStream().buffered())
@@ -86,7 +87,7 @@ class ControlClient(
                         val tele = launch {
                             while (isActive) {
                                 profiler.sampleRtt(p.host, p.controlPort)
-                                val t = profiler.telemetry(decodeTps, trimLevel)
+                                val t = profiler.telemetry(if (decodeTps > 0f) decodeTps else MeshState.ui.value.decodeTps, trimLevel)
                                 MeshState.set { it.copy(availBytes = t.availBytes, thermalHeadroom = t.thermalHeadroom, thermalStatus = t.thermalStatus, batteryPct = t.batteryPct.toInt(), charging = t.charging, rttP50 = t.rttMsP50, rttP95 = t.rttMsP95, cpusAllowed = t.cpusAllowed, totalBytes = profiler.memInfo().totalMem, decodeTps = decodeTps) }
                                 runCatching { send(envelope { telemetry = t }) }
                                 delay(2000)
