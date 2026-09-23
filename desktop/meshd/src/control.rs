@@ -241,7 +241,7 @@ async fn session(
                                 if let Some(d) = st.devices.write().unwrap().get_mut(&id) {
                                     if t.decode_tps > 0.0 { d.bench_tps = t.decode_tps; }
                                     t.device_id = id.clone();
-                                    d.telemetry = Some(t); d.last_seen_ms = now_ms(); d.online = true;
+                                    d.telemetry = Some(t); d.last_seen_ms = now_ms(); d.telemetry_ms = now_ms(); d.online = true;
                                 }
                             }
                         }

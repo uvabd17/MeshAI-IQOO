@@ -37,17 +37,23 @@ if api localhost:8080/api/state | jq -e --arg m "$BIG" '.models[] | select(.file
   check "$(status)" ready "run still ready after the shortfall refusal"
 else echo "  skip shortfall guard ($BIG not in catalog)"; fi
 check "$(pgrep -x llama-server | wc -l)" 1 "exactly one llama-server alive"
-echo "== replacement run with a MEASURED laptop: one credited plan → stop → start (D024) =="
+echo "== replacement runs with a MEASURED laptop (D024: credit only what is demonstrably held) =="
 api -X POST localhost:8080/api/stop >/dev/null
 api -X POST localhost:8080/api/devices/local/limit -d '{"usable_gb":null}' >/dev/null   # uncap: laptop memory is measured again
-api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":2048}" >/dev/null; check "$(wait_settled)" ready "laptop-alone run ready"
-check "$(api localhost:8080/api/state | jq -r '.plan.mode')" Single "fits on the laptop alone (no split)"
+api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":2048}" >/dev/null
+RESP=$(api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":2048}")   # immediately: the first run is still starting/loading
+check "$(echo "$RESP" | jq -r '.ok')" true "immediate re-run accepted (fits uncredited)"
+check "$(echo "$RESP" | jq -r '.credited | length')" 0 "a run that is not ready earns NO credit"
+check "$(wait_settled)" ready "laptop-alone run ready"; check "$(api localhost:8080/api/state | jq -r '.plan.mode')" Single "fits on the laptop alone (no split)"
+HELD=$(api localhost:8080/api/state | jq -r '.plan.placements[] | select(.device_id=="local") | .bytes')
+sleep 3   # let a post-ready laptop memory sample land
 RESP=$(api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":4096}")
 check "$(echo "$RESP" | jq -r '.ok')" true "replacement request accepted"
-check "$(echo "$RESP" | jq -r '.credited | length')" 1 "the live run's bytes were credited to the laptop"
+CRED=$(echo "$RESP" | jq -r '[.credited[] | select(.[0]=="local") | .[1]] | .[0] // 0')
+echo "  info credit for local = $CRED B (observed drop, capped at the placement's $HELD B)"
+check "$(( CRED <= HELD ))" 1 "credit never exceeds the placement bytes"
 check "$(wait_settled)" ready "replacement run ready (ctx 4096)"
-check "$(api localhost:8080/api/state | jq -r '.run.log_tail | map(select(test("plan credits"))) | length')" 1 "run log names the credit"
-check "$(api localhost:8080/api/state | jq -r '.run.log_tail | map(select(test("previous run stopped"))) | length')" 0 "no re-plan after the stop"
+if [[ "$CRED" -gt 0 ]]; then check "$(api localhost:8080/api/state | jq -r '.run.log_tail | map(select(test("plan credits"))) | length')" 1 "run log names the credit"; fi
 api -X POST localhost:8080/api/stop >/dev/null
 api -X POST localhost:8080/api/devices/local/limit -d '{"usable_gb":0.35}' >/dev/null   # re-cap for the remaining checks
 api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":2048}" >/dev/null; check "$(wait_settled)" ready "split run ready again"

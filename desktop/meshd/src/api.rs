@@ -392,10 +392,11 @@ fn default_ctx() -> u32 {
 }
 
 async fn api_plan(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Response {
-    match st.make_plan(&r.model, r.n_ctx, r.host) {
-        Ok(p) => {
+    // Same capacities as /api/run, so the preview never disagrees with what Run would do (round-9 #5).
+    match st.make_plan_credited(&r.model, r.n_ctx, r.host) {
+        Ok((p, credited)) => {
             let args = supervisor::llama_args(&st, &p).ok();
-            Json(serde_json::json!({"plan": p, "args": args})).into_response()
+            Json(serde_json::json!({"plan": p, "args": args, "credited": credited})).into_response()
         }
         Err(e) => (
             StatusCode::UNPROCESSABLE_ENTITY,
