@@ -74,11 +74,11 @@
       "id": "T009",
       "title": "Local split simulation: laptop llama-server + 2 local ggml-rpc-server workers on Qwen3-0.6B/8B; record t/s (stand-in until a phone is attached)",
       "phase": 0,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T008"
       ],
-      "evidence": "meshd planner produced 3-device split for Qwen3-0.6B (host 4 layers + 11 + 13); run in progress via /api/run"
+      "evidence": "2026-09-24: laptop host + 2 local RPC workers, Qwen3-0.6B: llama-bench pp 57-71 / tg 9.6-12.4 t/s; via meshd+/v1 chat: TTFT 2.9 s, 4.8 tok/s (loaded machine). docs/BENCHMARKS.md"
     },
     {
       "id": "T010",
@@ -104,11 +104,11 @@
       "id": "T012",
       "title": "meshd: llama-server supervisor (--rpc from admitted workers), /v1 proxy on :8080, restart on replan",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T011"
       ],
-      "evidence": "supervisor spawns llama-server with --rpc/-ngl/--tensor-split, waits for workers, health-polls; /v1 proxy with timing rows"
+      "evidence": "supervisor: worker reachability wait, --rpc/-ngl/--tensor-split, health poll, ready in 4.6-13 s; /v1 proxy records rows"
     },
     {
       "id": "T013",
@@ -165,31 +165,32 @@
       "id": "T030",
       "title": "Admin web pages Devices / Models / Plans&Jobs served by meshd at /admin",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T012"
       ],
-      "evidence": "admin/src: Overview/Devices/Models/Plan/Chat/Analytics served by meshd at /admin"
+      "evidence": "admin served at /admin; headless QA: 0 console errors, all six views render"
     },
     {
       "id": "T031",
       "title": "Admin web: monochrome design system (dark/light), provider marks, model catalog with HF download + progress, plan preview with layer map, chat with timing (TTFT, tok/s)",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T030"
       ],
-      "evidence": "monochrome design system, provider marks, catalog + downloads with progress, plan preview + layer map, chat with TTFT/tok/s, cloud reference slot"
+      "evidence": "browser-driven QA passed: plan preview → Run → ready → layer map → chat (328 tok, 4.8 tok/s) → analytics → QR → catalog"
     },
     {
       "id": "T032",
       "title": "Driven test: open admin in headless browser, download model, run chat on laptop-only and on simulated mesh, record timings to BENCHMARKS.md",
       "phase": 1,
-      "status": "PENDING",
+      "status": "ACTIVE",
       "blocked_by": [
         "T031",
         "T013"
-      ]
+      ],
+      "evidence": "laptop-only and simulated-mesh chats measured; cloud reference and real-phone rows pending"
     },
     {
       "id": "T040",

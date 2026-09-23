@@ -114,7 +114,9 @@ pub async fn v1(State(st): State<Arc<AppState>>, req: Request) -> Response {
                             };
                             st2.record_run(row);
                         } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
-                            if v["choices"][0]["delta"]["content"].is_string()
+                            let d = &v["choices"][0]["delta"];
+                            if d["content"].is_string()
+                                || d["reasoning_content"].is_string()
                                 || v["choices"][0]["text"].is_string()
                             {
                                 tokens += 1;
