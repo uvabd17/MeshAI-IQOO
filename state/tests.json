@@ -53,7 +53,7 @@
       "covers": "T031: plan preview, Run, ready, layer map, chat + timings, analytics, QR, catalog",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "first run passed; re-run pending after offer-flow change"
+      "evidence": "re-run on 19f2e4f after the offer-flow change: all 13 steps pass, QR renders from POST /api/pair/offer"
     },
     {
       "id": "V007",
