@@ -209,7 +209,7 @@
   $("#chat-clear").onclick = () => { history.length = 0; $("#chat").innerHTML = ""; };
   $("#chat-input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#chat-form").requestSubmit(); } });
   async function streamChat(url, key, model, messages, onDelta) {
-    const t0 = performance.now(); let ttft = null; let n = 0; let text = "";
+    const t0 = performance.now(); let ttft = null; let n = 0; let text = ""; let think = "";
     const r = await fetch(url + "/chat/completions", { method: "POST", headers: { "content-type": "application/json", ...(key ? { authorization: "Bearer " + key } : {}) }, body: JSON.stringify({ model, messages, stream: true, stream_options: { include_usage: true } }) });
     if (!r.ok) throw new Error(await r.text());
     const rd = r.body.getReader(); const dec = new TextDecoder(); let buf = "";
@@ -219,10 +219,16 @@
       let i; while ((i = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
         if (!line.startsWith("data:")) continue; const j = line.slice(5).trim(); if (j === "[DONE]") continue;
-        try { const v = JSON.parse(j); const d = v.choices?.[0]?.delta?.content; if (d) { if (ttft == null) ttft = performance.now() - t0; n++; text += d; onDelta(text); } if (v.usage?.completion_tokens) n = v.usage.completion_tokens; } catch {}
+        try {
+          const v = JSON.parse(j); const delta = v.choices?.[0]?.delta || {};
+          const r = delta.reasoning_content, d = delta.content;
+          if (r) { if (ttft == null) ttft = performance.now() - t0; n++; think += r; onDelta(`<think>${think}</think>${text}`); }
+          if (d) { if (ttft == null) ttft = performance.now() - t0; n++; text += d; onDelta(think ? `<think>${think}</think>${text}` : text); }
+          if (v.usage?.completion_tokens) n = v.usage.completion_tokens;
+        } catch {}
       }
     }
-    const total = performance.now() - t0; return { text, ttft: ttft ?? total, total, tokens: n, tps: n * 1000 / Math.max(1, total - (ttft ?? 0)) };
+    const total = performance.now() - t0; return { text: think ? `<think>${think}</think>${text}` : text, ttft: ttft ?? total, total, tokens: n, tps: n * 1000 / Math.max(1, total - (ttft ?? 0)) };
   }
   let lastPrompt = "";
   $("#chat-form").onsubmit = async e => {
@@ -250,11 +256,11 @@
     if (view !== "runs") return;
     const rows = RUNS.slice().reverse();
     const by = {};
-    for (const r of RUNS) { const k = `${r.model} · ${r.mode} · ${r.devices} dev · host ${devName(r.host)}`; (by[k] ||= []).push(r.tps); }
+    for (const r of RUNS) { if (!r.tokens_out) continue; const k = `${r.model} · ${r.mode} · ${r.devices} dev · host ${devName(r.host)}`; (by[k] ||= []).push(r.tps); }
     const agg = Object.entries(by).map(([k, v]) => [k, v.reduce((a, b) => a + b, 0) / v.length, v.length]).sort((a, b) => b[1] - a[1]);
     const max = Math.max(1, ...agg.map(a => a[1]));
     $("#runs-bars").innerHTML = agg.map(([k, v, n]) => `<div class="bar"><span title="${esc(k)}">${esc(k)} <span class="muted xs">×${n}</span></span><div class="track"><i style="width:${100 * v / max}%"></i></div><span class="num">${fmt(v, 1)} tok/s</span></div>`).join("") || '<div class="muted sm">no requests yet — use Chat</div>';
-    const ok = RUNS.filter(r => r.ok);
+    const ok = RUNS.filter(r => r.ok && r.tokens_out > 0);
     const avg = (f) => ok.length ? ok.reduce((a, r) => a + f(r), 0) / ok.length : NaN;
     $("#runs-stats").innerHTML = [["Requests", RUNS.length, ""], ["Avg decode", fmt(avg(r => r.tps), 1), "tok/s"], ["Avg TTFT", fmt(avg(r => r.ttft_ms), 0), "ms"]].map(([k, v, u]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}<small>${u}</small></div></div>`).join("");
     $("#runs-table").style.setProperty("--cols", "1.2fr 2fr 1fr 1fr .7fr .7fr .7fr .7fr");
