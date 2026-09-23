@@ -510,23 +510,55 @@ impl AppState {
         Ok(())
     }
 
-    /// Bytes the current run holds on devices whose usable memory is *measured* (no override):
-    /// what a stop could give back to the planner. Override devices free nothing (round-7 #2).
-    pub fn freeable_bytes(&self) -> u64 {
-        let Some(plan) = self.plan.read().unwrap().clone() else {
-            return 0;
-        };
+    /// Device capacities for planning a *replacement* run: every online, measured (no override)
+    /// device that holds part of the current plan is credited with its own placement bytes, i.e.
+    /// exactly what stopping the run will give back. Phones report memory only every 2 s, so a plan
+    /// made after the stop would still see their old figures (round-8 #1); crediting before the stop
+    /// is deterministic and lets the request be refused *without* touching the live run.
+    /// Returns (caps, credited bytes per device).
+    pub fn credited_caps(&self) -> (Vec<DeviceCap>, Vec<(String, u64)>) {
+        let plan = self.plan.read().unwrap().clone();
         let d = self.devices.read().unwrap();
-        plan.placements
-            .iter()
-            .filter(|p| p.role != meshcore::planner::Role::Rejected)
-            .filter(|p| {
-                d.get(&p.device_id)
-                    .map(|dev| dev.usable_override_bytes.is_none())
-                    .unwrap_or(false)
+        let mut credits = Vec::new();
+        let caps = d
+            .values()
+            .filter(|dev| dev.online)
+            .map(|dev| {
+                let mut cap = dev.cap();
+                if dev.usable_override_bytes.is_none() {
+                    if let Some(p) = plan.as_ref().and_then(|p| {
+                        p.placements
+                            .iter()
+                            .find(|pl| pl.device_id == dev.id && pl.role != planner::Role::Rejected)
+                    }) {
+                        if p.bytes > 0 {
+                            cap.usable_bytes = cap.usable_bytes.saturating_add(p.bytes);
+                            credits.push((dev.id.clone(), p.bytes));
+                        }
+                    }
+                }
+                cap
             })
-            .map(|p| p.bytes)
-            .sum()
+            .collect();
+        (caps, credits)
+    }
+
+    /// Plan a replacement run against credited capacities (see `credited_caps`).
+    pub fn make_plan_credited(
+        &self,
+        model_file: &str,
+        n_ctx: u32,
+        prefer_host: Option<String>,
+    ) -> anyhow::Result<(Plan, Vec<(String, u64)>)> {
+        let m = self
+            .model(model_file)
+            .ok_or_else(|| anyhow::anyhow!("model not found: {model_file}"))?;
+        let (caps, credits) = self.credited_caps();
+        let mut pol = self.policy.read().unwrap().clone();
+        pol.prefer_host = prefer_host;
+        let mut plan = planner::plan(&m.info, &caps, n_ctx, &pol)?;
+        plan.model = m.file.clone();
+        Ok((plan, credits))
     }
 
     pub fn set_roles_from_plan(&self, plan: &Plan) {
@@ -717,53 +749,94 @@ pub fn qr_terminal(payload: &str) -> String {
         .build()
 }
 
-/// Whether stopping the current run could turn this dry-run planning failure into success: only a
-/// pure memory shortfall no larger than what the run would free (round-7 #2). `NoDevices` may come
-/// from thermal/battery/RTT/tier rejections that a stop cannot cure, so it never proceeds.
-pub fn stop_could_cure(e: &anyhow::Error, freeable: u64) -> bool {
-    match e.downcast_ref::<meshcore::planner::PlanError>() {
-        Some(meshcore::planner::PlanError::DoesNotFit { needed, available }) => {
-            *needed <= available.saturating_add(freeable)
-        }
-        _ => false,
-    }
-}
-
 #[cfg(test)]
-mod gate_tests {
-    use super::stop_could_cure;
-    use meshcore::planner::PlanError;
+mod credit_tests {
+    use super::*;
+    use std::sync::Arc;
 
-    #[test]
-    fn shortfall_within_what_the_run_frees_may_stop() {
-        let e = anyhow::Error::from(PlanError::DoesNotFit {
-            needed: 10,
-            available: 5,
+    fn st() -> Arc<AppState> {
+        let tmp = std::env::temp_dir().join(format!("meshai-credit-{}", now_ms()));
+        Arc::new(AppState::new(tmp.clone(), tmp.clone(), tmp, false, None))
+    }
+
+    fn remote(st: &AppState, id: &str, avail: u64, online: bool, override_bytes: Option<u64>) {
+        let mut dev = AppState::new_remote_device(id, id, "10.0.0.9", 50052);
+        dev.online = online;
+        dev.usable_override_bytes = override_bytes;
+        dev.telemetry = Some(proto::Telemetry {
+            device_id: id.into(),
+            avail_bytes: avail,
+            ..Default::default()
         });
-        assert!(stop_could_cure(&e, 6));
-        assert!(stop_could_cure(&e, 5));
+        st.devices.write().unwrap().insert(id.into(), dev);
+    }
+
+    fn current_plan(st: &AppState, placements: Vec<(&str, u64, planner::Role)>) {
+        let mut plan = Plan {
+            model: "m.gguf".into(),
+            mode: planner::Mode::LayerSplit,
+            n_ctx: 2048,
+            host_id: "local".into(),
+            placements: Vec::new(),
+            summary: String::new(),
+            total_needed_bytes: 0,
+            total_usable_bytes: 0,
+        };
+        for (id, bytes, role) in placements {
+            plan.placements.push(planner::Placement {
+                device_id: id.into(),
+                name: id.into(),
+                role,
+                layer_start: 0,
+                layer_end: 0,
+                bytes,
+                split_weight: 0.0,
+                reason: String::new(),
+            });
+        }
+        *st.plan.write().unwrap() = Some(plan);
     }
 
     #[test]
-    fn shortfall_beyond_what_the_run_frees_never_stops() {
-        let e = anyhow::Error::from(PlanError::DoesNotFit {
-            needed: 10,
-            available: 5,
-        });
-        assert!(!stop_could_cure(&e, 4));
-        assert!(!stop_could_cure(&e, 0));
+    fn measured_online_members_are_credited_with_their_own_bytes() {
+        let st = st();
+        remote(&st, "phone", 3_000_000_000, true, None);
+        remote(&st, "capped", 3_000_000_000, true, Some(500_000_000));
+        remote(&st, "offline", 3_000_000_000, false, None);
+        remote(&st, "bystander", 3_000_000_000, true, None);
+        current_plan(
+            &st,
+            vec![
+                ("phone", 2_000_000_000, planner::Role::Worker),
+                ("capped", 400_000_000, planner::Role::Worker),
+                ("offline", 1_000_000_000, planner::Role::Worker),
+                ("bystander", 700_000_000, planner::Role::Rejected),
+            ],
+        );
+        let (caps, credits) = st.credited_caps();
+        let get = |id: &str| {
+            caps.iter()
+                .find(|c| c.device_id == id)
+                .map(|c| c.usable_bytes)
+        };
+        let base = 3_000_000_000u64.saturating_sub(HEADROOM_BYTES);
+        assert_eq!(get("phone"), Some(base + 2_000_000_000), "member: credited");
+        assert_eq!(get("capped"), Some(500_000_000), "override: never credited");
+        assert_eq!(get("offline"), None, "offline: not planned at all");
+        assert_eq!(
+            get("bystander"),
+            Some(base),
+            "rejected placement: no credit"
+        );
+        assert_eq!(credits, vec![("phone".to_string(), 2_000_000_000)]);
     }
 
     #[test]
-    fn non_memory_failures_never_stop() {
-        assert!(!stop_could_cure(
-            &anyhow::Error::from(PlanError::NoDevices),
-            1 << 40
-        ));
-        assert!(!stop_could_cure(
-            &anyhow::anyhow!("model not found"),
-            1 << 40
-        ));
+    fn no_live_plan_means_no_credit() {
+        let st = st();
+        remote(&st, "phone", 3_000_000_000, true, None);
+        let (_, credits) = st.credited_caps();
+        assert!(credits.is_empty());
     }
 }
 

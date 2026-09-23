@@ -68,10 +68,11 @@ class ProcessGateTest {
         g.arm { true }
         val spawned = java.util.concurrent.atomic.AtomicBoolean(false)
         val killedAfterSpawn = java.util.concurrent.atomic.AtomicBoolean(false)
+        val insideLock = java.util.concurrent.CountDownLatch(1)
         val t = Thread {
-            g.tryStart("worker", "p") { Thread.sleep(300); spawned.set(true); Unit }
+            g.tryStart("worker", "p") { insideLock.countDown(); Thread.sleep(300); spawned.set(true); Unit }
         }
-        t.start(); Thread.sleep(50) // the spawn is now inside the lock
+        t.start(); insideLock.await() // the spawn is now inside the lock (no timing assumption, round-8 #6)
         val had = g.disarm { killedAfterSpawn.set(spawned.get()) }
         t.join()
         assertTrue("disarm must block until the spawn published its process", killedAfterSpawn.get())
@@ -82,9 +83,10 @@ class ProcessGateTest {
     fun failedSpawnLeavesNothingToReport() {
         val g = ProcessGate()
         g.arm { true }
-        g.tryStart("host", "p") { Unit }
-        g.spawnFailed()
-        assertNull(g.disarm())
+        val r = g.tryStart("host", "p") { null as Unit? } // spawn failed
+        assertNotNull(r); assertNull(r!!.second)
+        assertEquals("", g.currentRole)
+        assertNull("a stop after a failed spawn must not report a process that never existed", g.disarm())
     }
 
     @Test

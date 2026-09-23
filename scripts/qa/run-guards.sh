@@ -37,6 +37,20 @@ if api localhost:8080/api/state | jq -e --arg m "$BIG" '.models[] | select(.file
   check "$(status)" ready "run still ready after the shortfall refusal"
 else echo "  skip shortfall guard ($BIG not in catalog)"; fi
 check "$(pgrep -x llama-server | wc -l)" 1 "exactly one llama-server alive"
+echo "== replacement run with a MEASURED laptop: one credited plan → stop → start (D024) =="
+api -X POST localhost:8080/api/stop >/dev/null
+api -X POST localhost:8080/api/devices/local/limit -d '{"usable_gb":null}' >/dev/null   # uncap: laptop memory is measured again
+api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":2048}" >/dev/null; check "$(wait_settled)" ready "laptop-alone run ready"
+check "$(api localhost:8080/api/state | jq -r '.plan.mode')" Single "fits on the laptop alone (no split)"
+RESP=$(api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":4096}")
+check "$(echo "$RESP" | jq -r '.ok')" true "replacement request accepted"
+check "$(echo "$RESP" | jq -r '.credited | length')" 1 "the live run's bytes were credited to the laptop"
+check "$(wait_settled)" ready "replacement run ready (ctx 4096)"
+check "$(api localhost:8080/api/state | jq -r '.run.log_tail | map(select(test("plan credits"))) | length')" 1 "run log names the credit"
+check "$(api localhost:8080/api/state | jq -r '.run.log_tail | map(select(test("previous run stopped"))) | length')" 0 "no re-plan after the stop"
+api -X POST localhost:8080/api/stop >/dev/null
+api -X POST localhost:8080/api/devices/local/limit -d '{"usable_gb":0.35}' >/dev/null   # re-cap for the remaining checks
+api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":2048}" >/dev/null; check "$(wait_settled)" ready "split run ready again"
 echo "== forget a member mid-run → run ends with an error, device gone =="
 api -X DELETE "localhost:8080/api/devices/$SIM" >/dev/null; sleep 1
 check "$(status)" error "run status error"; check "$(api localhost:8080/api/state | jq -r '.run.error' | grep -c forgotten)" 1 "error names the forgotten device"

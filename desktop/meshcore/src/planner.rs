@@ -99,6 +99,12 @@ pub enum PlanError {
     NoDevices,
     #[error("model needs {needed} bytes but eligible devices pool only {available} bytes — add a device or use a smaller quant/context")]
     DoesNotFit { needed: u64, available: u64 },
+    #[error("host {host} can hold only {usable} bytes but the embeddings/output tensors alone need {fixed} bytes — pick a host with more free memory")]
+    HostTooSmall {
+        host: String,
+        usable: u64,
+        fixed: u64,
+    },
 }
 
 fn gb(b: u64) -> String {
@@ -244,9 +250,10 @@ pub fn plan(
         .unwrap_or(eligible[0]);
     let host_fixed = model.non_layer_bytes;
     if host.usable_bytes <= host_fixed {
-        return Err(PlanError::DoesNotFit {
-            needed,
-            available: host.usable_bytes,
+        return Err(PlanError::HostTooSmall {
+            host: host.name.clone(),
+            usable: host.usable_bytes,
+            fixed: host_fixed,
         });
     }
     let mut others: Vec<&DeviceCap> = eligible

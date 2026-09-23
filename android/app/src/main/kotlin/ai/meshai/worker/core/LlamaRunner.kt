@@ -41,6 +41,7 @@ class LlamaRunner(private val ctx: Context) {
         start("host", planId, hostArgs(File(libDir, "libmeshai_server.so").path, model.path, nCtx, threads, bindHost, workers, workerLayers))
 
     private fun start(newRole: String, planId: String, cmd: List<String>): Start {
+        var spawnError: Throwable? = null
         val started = gate.tryStart(newRole, planId) {
             killProcess() // the previous process, if any, is ours to replace
             runCatching {
@@ -49,12 +50,12 @@ class LlamaRunner(private val ctx: Context) {
                 pb.environment()["HOME"] = ctx.filesDir.path
                 pb.directory(ctx.filesDir)
                 pb.start().also { proc = it } // published under the lock: a concurrent stop sees it
-            }
+            }.onFailure { spawnError = it }.getOrNull() // null → the gate clears the owner under the lock
         } ?: run { MeshState.log("✗ $newRole start refused: stopped (or link lost) before it could begin"); return Start.REFUSED }
-        val (myGen, result) = started
-        val p = result.getOrElse { e ->
-            gate.spawnFailed()
-            MeshState.log("✗ start failed: ${e.message}"); MeshState.set { s -> s.copy(lastError = e.message) }
+        val (myGen, p) = started
+        if (p == null) {
+            val msg = spawnError?.message ?: "spawn failed"
+            MeshState.log("✗ start failed: $msg"); MeshState.set { s -> s.copy(lastError = msg) }
             return Start.FAILED
         }
         MeshState.set { it.copy(processRunning = true, lastError = null) }
