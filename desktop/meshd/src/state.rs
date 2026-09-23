@@ -130,7 +130,8 @@ pub struct AppState {
     pub offer: RwLock<Option<PairingOffer>>,
     pub policy: RwLock<Policy>,
     pub child: Mutex<Option<tokio::process::Child>>,
-    pub sim_children: Mutex<Vec<tokio::process::Child>>,
+    pub sim_children: Mutex<Vec<tokio::process::Child>>, // simulated phones: live across runs
+    pub local_worker: Mutex<Option<tokio::process::Child>>, // laptop-as-worker for a phone host: per run
     pub plan_tx: tokio::sync::broadcast::Sender<(String, proto::Plan)>, // device_id -> plan to push
 }
 
@@ -166,6 +167,7 @@ impl AppState {
             policy: RwLock::new(Policy::default()),
             child: Mutex::new(None),
             sim_children: Mutex::new(Vec::new()),
+            local_worker: Mutex::new(None),
             plan_tx,
         };
         s.load_runs();

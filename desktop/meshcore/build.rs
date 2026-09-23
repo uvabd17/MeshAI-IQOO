@@ -5,6 +5,6 @@ fn main() {
     println!("cargo:rerun-if-changed={}", proto.display());
     prost_build::Config::new()
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .compile_protos(&[proto.clone()], &[proto.parent().unwrap()])
+        .compile_protos(std::slice::from_ref(&proto), &[proto.parent().unwrap()])
         .expect("compile mesh.proto");
 }

@@ -306,7 +306,7 @@ async fn api_sim_workers(State(st): State<Arc<AppState>>, Json(r): Json<SimReq>)
             dev.name = format!("Simulated phone {}", i + 1);
         }
         if r.spawn {
-            match supervisor::spawn_rpc_server(&st.llama_bin, "127.0.0.1", port, Some(2)) {
+            match supervisor::spawn_rpc_server(&st.llama_bin, "127.0.0.1", port, Some(2), false) {
                 Ok(c) => {
                     spawned.push(port);
                     st.sim_children.lock().unwrap().push(c);

@@ -99,14 +99,14 @@ pub fn spawn_rpc_server(
     host: &str,
     port: u16,
     threads: Option<usize>,
+    cache: bool,
 ) -> anyhow::Result<Child> {
     // NB: upstream ggml-rpc-server flags are only -t/-d/-H/-p/-c (no memory cap); memory limits live in the planner.
     let mut cmd = Command::new(bin.join("ggml-rpc-server"));
-    cmd.arg("-H")
-        .arg(host)
-        .arg("-p")
-        .arg(port.to_string())
-        .arg("-c");
+    cmd.arg("-H").arg(host).arg("-p").arg(port.to_string());
+    if cache {
+        cmd.arg("-c"); // one rpc-server per machine only: two cache users on one host corrupt each other
+    }
     if let Some(t) = threads {
         cmd.arg("-t").arg(t.to_string());
     }
@@ -132,6 +132,7 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
             ..Default::default()
         };
     }
+    tracing::info!("start: plan {} mode {:?} host {}", plan.model, plan.mode, plan.host_id);
     let la = llama_args(&st, &plan)?;
     st.run.write().unwrap().args = std::iter::once(la.program.clone())
         .chain(la.args.iter().cloned())
@@ -143,13 +144,13 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
         .iter()
         .any(|p| p.role == Role::Worker && p.device_id == "local")
     {
-        let child = spawn_rpc_server(&st.llama_bin, "0.0.0.0", meshcore::RPC_PORT, None)?;
+        let child = spawn_rpc_server(&st.llama_bin, "0.0.0.0", meshcore::RPC_PORT, None, true)?;
         st.push_log(format!(
             "local worker: ggml-rpc-server on :{} (pid {})",
             meshcore::RPC_PORT,
             child.id().unwrap_or(0)
         ));
-        st.sim_children.lock().unwrap().push(child);
+        *st.local_worker.lock().unwrap() = Some(child);
     }
     // Push the plan to every remote participant (phones start rpc-server / llama-server themselves)
     let pplan = to_proto(&st, &plan);
@@ -162,6 +163,7 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
     }
 
     // llama.cpp aborts the whole process if an RPC server is unreachable, so wait for every worker first.
+    tracing::info!("start: waiting for {} worker(s)", la.workers.len());
     for (addr, port) in &la.workers {
         let target = format!("{addr}:{port}");
         let mut ok = false;
@@ -301,12 +303,8 @@ pub async fn stop(st: &Arc<AppState>) {
     if let Some(mut c) = st.child.lock().unwrap().take() {
         let _ = c.start_kill();
     }
-    {
-        let mut kids = st.sim_children.lock().unwrap();
-        for c in kids.iter_mut() {
-            let _ = c.start_kill();
-        }
-        kids.clear();
+    if let Some(mut c) = st.local_worker.lock().unwrap().take() {
+        let _ = c.start_kill();
     }
     // tell remote participants to stop (empty plan)
     let ids: Vec<String> = st

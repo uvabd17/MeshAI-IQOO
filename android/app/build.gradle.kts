@@ -1,4 +1,5 @@
 import com.google.protobuf.gradle.id
+import com.google.protobuf.gradle.proto
 
 plugins {
     id("com.android.application")
@@ -28,8 +29,12 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
-    sourceSets["main"].proto { srcDir("../../proto") }
-    sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
+    sourceSets {
+        getByName("main") {
+            proto { srcDir("../../proto") }
+            jniLibs.srcDirs("src/main/jniLibs")
+        }
+    }
 }
 
 protobuf {
