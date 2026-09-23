@@ -405,44 +405,64 @@ async fn api_plan(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Re
     }
 }
 
-/// Cheap validation first (a refused request never touches the current run), then stop the
-/// previous run, plan against the freed memory (M4), record the new plan and return while
-/// bring-up continues in the background (N5). Initiation is serialised (M10).
+/// Order (D024): cheap checks and a *dry-run plan* against the current memory view first — a
+/// request that fails for a reason a stop cannot cure (unknown model, bad n_ctx, tier gate, phone
+/// host without `--lan`) never touches the running mesh. Only a memory shortfall may resolve after
+/// the stop, so then: stop → plan against the freed memory (M4) → start (N5). If the re-plan still
+/// fails the 422 body and the run log say that the previous run was stopped (round-6 #1).
 async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Response {
     let _g = st.run_lock.lock().await;
-    if let Err(e) = st.precheck_run(&r.model, r.host.as_deref()) {
-        return (
+    let refuse = |e: String| {
+        (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(serde_json::json!({"error": e})),
         )
-            .into_response();
+            .into_response()
+    };
+    if let Err(e) = st.precheck_run(&r.model, r.n_ctx, r.host.as_deref()) {
+        return refuse(e);
+    }
+    st.refresh_local_profile();
+    let remote_without_lan = |plan: &meshcore::planner::Plan| {
+        !st.lan
+            && st
+                .devices
+                .read()
+                .unwrap()
+                .get(&plan.host_id)
+                .map(|d| !d.is_local)
+                .unwrap_or(false)
+    };
+    const LAN_MSG: &str = "a phone can only be the host when meshd runs with --lan --api-token (it fetches the model from this API)";
+    match st.make_plan(&r.model, r.n_ctx, r.host.clone()) {
+        Ok(dry) if remote_without_lan(&dry) => return refuse(LAN_MSG.into()),
+        Ok(_) => {}
+        Err(e) => {
+            let memory_related = matches!(
+                e.downcast_ref::<meshcore::planner::PlanError>(),
+                Some(meshcore::planner::PlanError::DoesNotFit { .. })
+                    | Some(meshcore::planner::PlanError::NoDevices)
+            );
+            if !memory_related || st.run.read().unwrap().status == "idle" {
+                return refuse(e.to_string());
+            }
+            // It may fit once the current run's memory is released: fall through to the stop.
+        }
     }
     supervisor::stop(&st).await;
     st.refresh_local_profile();
     let plan = match st.make_plan(&r.model, r.n_ctx, r.host) {
         Ok(p) => p,
         Err(e) => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response()
+            let msg = format!("previous run stopped; new plan failed: {e}");
+            st.push_log(msg.clone());
+            return refuse(msg);
         }
     };
-    // The planner may pick a phone host on its own (prefer_host None): the same rule applies (D024).
-    let host_is_remote = st
-        .devices
-        .read()
-        .unwrap()
-        .get(&plan.host_id)
-        .map(|d| !d.is_local)
-        .unwrap_or(false);
-    if host_is_remote && !st.lan {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": "a phone can only be the host when meshd runs with --lan --api-token (it fetches the model from this API)"})),
-        )
-            .into_response();
+    if remote_without_lan(&plan) {
+        let msg = format!("previous run stopped; new plan refused: {LAN_MSG}");
+        st.push_log(msg.clone());
+        return refuse(msg);
     }
     match supervisor::start(st.clone(), plan.clone()).await {
         Ok(()) => Json(serde_json::json!({"ok": true, "plan": plan})).into_response(),

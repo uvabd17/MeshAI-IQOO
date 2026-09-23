@@ -78,12 +78,7 @@ class MeshService : Service() {
                 acquireLocks(); client.connect(p); MeshState.log("joining ${p.meshId} @ ${p.host}")
             } ?: MeshState.log("✗ invalid pairing payload")
             ACTION_LEAVE -> { runner.stop(); client.disconnect(); releaseLocks(); MeshState.set { it.copy(role = "idle", planSummary = "", modelFile = "") }; stopSelf() }
-            ACTION_STOP_PROCESS -> {
-                val role = runner.currentRole
-                val planId = MeshState.currentPlan?.planId ?: ""
-                runner.stop(); MeshState.set { it.copy(role = "idle") }
-                if (role.isNotEmpty()) report(role, false, "$role stopped from the phone", planId) // meshd must not keep showing "ready" (round-4 #11)
-            }
+            ACTION_STOP_PROCESS -> userStop()
         }
         return START_STICKY
     }
@@ -91,6 +86,20 @@ class MeshService : Service() {
     /** Tell the coordinator about a failed process or a refused plan (round-3 #2/L2). */
     private fun report(job: String, ok: Boolean, note: String, planId: String) =
         client.notify(envelope { jobResult = jobResult { jobId = job; this.ok = ok; output = note.toByteArray().toByteString(); this.planId = planId } })
+
+    /**
+     * Stop from the phone's own UI (round-6 #3): kill/disarm now, cancel the plan being applied (a host download
+     * included) through the actor, and tell meshd — whether a process was running or the plan was still being
+     * prepared — so it never waits on a phone that gave up.
+     */
+    private fun userStop() {
+        val had = runner.stop()
+        val applying = MeshState.currentPlan?.takeIf { it.planId != "stop" }
+        plans.trySend(Queued(Plan.newBuilder().setPlanId("stop").build(), linkGen.get()))
+        MeshState.set { it.copy(role = "idle") }
+        val (role, planId) = had ?: (MeshState.ui.value.role to (applying?.planId ?: ""))
+        if (planId.isNotEmpty() && (role == "host" || role == "worker")) report(role, false, "$role stopped from the phone", planId)
+    }
 
     /** Runs on the control client's IO thread: kill now (and disarm the runner), then let the actor settle. */
     private fun onLinkLost() {

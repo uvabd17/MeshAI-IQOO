@@ -8,7 +8,7 @@
       "covers": "syntax, JSON schema, agent/skill frontmatter, proto (when protoc), cargo/gradle unit tests when present",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "24 ok, 0 failed (2026-09-24, after round-4 commit)"
+      "evidence": "24 ok, 0 failed (03:51 IST, round-6 batch)"
     },
     {
       "id": "V002",
@@ -35,7 +35,7 @@
       "covers": "gguf parser on real file, planner rules, framing, pairing secrets, llama arg derivation (ngl+1/tensor-split), model name validation, control-plane heartbeat/reconnect over a real socket (tokio), planner device growth",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "27 passed (13 meshcore + 14 meshd) after round-5; clippy --all-targets -D warnings clean"
+      "evidence": "29 passed (13 meshcore + 16 meshd) after round-6, 03:51 IST; clippy --all-targets -D warnings clean"
     },
     {
       "id": "V005",
@@ -44,7 +44,7 @@
       "covers": "T009/T012 run path incl. worker wait, host watcher, /v1 proxy rows",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 05:20 (round-5 build) via scripts/qa/run-guards.sh: ready, 3 chats, stop ok"
+      "evidence": "PASS 03:51 IST (round-6 build) via scripts/qa/run-guards.sh: ready, 3 chats 19.7–21.7 tok/s client, stop ok"
     },
     {
       "id": "V006",
@@ -53,7 +53,7 @@
       "covers": "T031: plan preview, Run, ready, layer map, chat + timings, analytics, QR, catalog",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 05:22 (round-5 build): run → ready 2.0 s → layer map → chat 193 ms TTFT / 23.5 tok/s / 24 tok → analytics 27 requests → devices/QR/catalog/disk; 0 console errors, 0 failed requests"
+      "evidence": "PASS 03:51 IST (round-6 build): all views; chat 225 ms TTFT / 22.6 tok/s / 33 tok; 0 console errors, 0 failed requests"
     },
     {
       "id": "V007",
@@ -62,7 +62,7 @@
       "covers": "T020 NewApi and manifest rules",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 05:15: lint + testDebugUnitTest (4) + assembleDebug after round-5 Kotlin changes"
+      "evidence": "PASS 03:51 IST: lint + testDebugUnitTest (10) + assembleDebug"
     },
     {
       "id": "V008",
@@ -80,7 +80,7 @@
       "covers": "N5/M10: background bring-up with generation; stop is not blocked",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 05:20 (round-5 build): stop at 0.05/0.3/1.0/2.5 s into bring-up, 114–124 ms, 0 orphans"
+      "evidence": "PASS 03:51 IST (round-6 build): stop at 0.05/0.3/1.0/2.5 s into bring-up, 112–119 ms, 0 orphans"
     },
     {
       "id": "V010",
@@ -89,7 +89,7 @@
       "covers": "heartbeats under telemetry load (≥3 in 25 s), secret reconnect supersedes and closes the old socket, wrong secret → Bye, plan re-sent on reconnect + has_plan, failure report honoured only for the current plan id, idle vs member disconnect, forget → Bye + close, silent link dropped, pre-auth 4 KiB frame cap, 5 s Hello deadline",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "9 control tests pass (26.3 s wall): + reconnect→re-send→drop ends the run, reconnect that wins while cleanup waits keeps the run, forgetting a member ends the run + Bye + pairing gone"
+      "evidence": "11 control tests pass (26.3 s wall), 03:51 IST: + stop withdraws a re-sent plan and nothing is re-sent after a stop; pre-auth pool per IP (5th socket dropped, released on close)"
     },
     {
       "id": "V011",
@@ -98,7 +98,7 @@
       "covers": "HostArgsTest: phone host split rule == derive_args (ngl+1, head pinned, 0.440000,0.560000), single worker no split, no workers ngl 0, Locale-independent decimals",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "tests=4 failures=0 errors=0 (build/test-results/testDebugUnitTest)"
+      "evidence": "tests=10 failures=0 (HostArgsTest 4 + ProcessGateTest 6: unarmed refused, link loss after arm refused, stop disarms + stale generation, supersede, plan id captured), 03:51 IST"
     },
     {
       "id": "V012",
@@ -107,7 +107,7 @@
       "covers": "416 carries Content-Range */len; POST /api/run with a phone host and no --lan → 422 and the current run stays ready; DELETE /api/devices/{id} on a run member → run error 'was forgotten', device removed",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 05:21 (round-5 build, precheck→stop→plan): 416 content-range bytes */639446688; phone-host request 422 with run still ready; forget member → error 'was forgotten', devices 2"
+      "evidence": "PASS 03:51 IST (round-6 build, scripts/qa/run-guards.sh ALL OK): 416 content-range */len; --lan refusal, n_ctx > n_ctx_train refusal and unknown-model refusal each 422 with the run still ready and exactly one llama-server; forget member → error naming it, device removed"
     }
   ]
 }

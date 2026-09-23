@@ -22,6 +22,39 @@ pub const HEARTBEAT_SECS: u64 = 10;
 /// phone (round-5 #5).
 const MAX_CONNECTIONS: usize = 64;
 const MAX_PREAUTH: usize = 16;
+/// Per source address, so one LAN peer cycling silent sockets cannot fill the pre-auth pool and
+/// lock a reconnecting phone out (round-6 #5).
+const MAX_PREAUTH_PER_IP: usize = 4;
+
+#[derive(Default)]
+struct PreauthPool {
+    total: std::sync::atomic::AtomicUsize,
+    per_ip: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, usize>>,
+}
+
+impl PreauthPool {
+    /// Take a slot for `ip`; `false` if the pool or that address is full.
+    fn acquire(&self, ip: std::net::IpAddr) -> bool {
+        let mut m = self.per_ip.lock().unwrap();
+        let n = m.entry(ip).or_insert(0);
+        if *n >= MAX_PREAUTH_PER_IP || self.total.load(Ordering::SeqCst) >= MAX_PREAUTH {
+            return false;
+        }
+        *n += 1;
+        self.total.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+    fn release(&self, ip: std::net::IpAddr) {
+        let mut m = self.per_ip.lock().unwrap();
+        if let Some(n) = m.get_mut(&ip) {
+            *n -= 1;
+            if *n == 0 {
+                m.remove(&ip);
+            }
+        }
+        self.total.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 /// Before Hello a frame may be at most this big and Hello must arrive within this deadline, so 64
 /// unauthenticated sockets can hold at most 64 × 4 KiB, not 64 × 16 MiB (round-4 #9).
 const PREAUTH_MAX_FRAME: usize = 4096;
@@ -35,22 +68,19 @@ pub async fn serve(st: Arc<AppState>, port: u16) -> anyhow::Result<()> {
 
 pub async fn serve_on(st: Arc<AppState>, l: TcpListener) -> anyhow::Result<()> {
     let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let preauth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let preauth = Arc::new(PreauthPool::default());
     loop {
         let (sock, peer) = l.accept().await?;
-        if live.load(Ordering::SeqCst) >= MAX_CONNECTIONS
-            || preauth.load(Ordering::SeqCst) >= MAX_PREAUTH
-        {
-            tracing::warn!("control: too many connections, dropping {peer}");
+        if live.load(Ordering::SeqCst) >= MAX_CONNECTIONS || !preauth.acquire(peer.ip()) {
+            tracing::warn!("control: too many (pre-auth) connections, dropping {peer}");
             continue;
         }
         let st = st.clone();
         let live = live.clone();
         let preauth = preauth.clone();
         live.fetch_add(1, Ordering::SeqCst);
-        preauth.fetch_add(1, Ordering::SeqCst);
         tokio::spawn(async move {
-            handle(st, sock, peer.ip().to_string(), preauth).await;
+            handle(st, sock, peer.ip(), preauth).await;
             live.fetch_sub(1, Ordering::SeqCst);
         });
     }
@@ -69,14 +99,14 @@ struct Session {
     link_local: Option<String>,
     device_id: Option<String>,
     seq: u64,
-    /// Pre-auth pool counter; released once Hello succeeds or when the socket closes unpaired.
-    preauth: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// Pre-auth pool slot; released once Hello succeeds or when the socket closes unpaired.
+    preauth: Option<(Arc<PreauthPool>, std::net::IpAddr)>,
 }
 
 impl Session {
     fn authenticated(&mut self) {
-        if let Some(p) = self.preauth.take() {
-            p.fetch_sub(1, Ordering::SeqCst);
+        if let Some((p, ip)) = self.preauth.take() {
+            p.release(ip);
         }
     }
 }
@@ -85,16 +115,17 @@ impl Session {
 async fn handle(
     st: Arc<AppState>,
     sock: TcpStream,
-    ip: String,
-    preauth: Arc<std::sync::atomic::AtomicUsize>,
+    ip: std::net::IpAddr,
+    preauth: Arc<PreauthPool>,
 ) {
     let mut s = Session {
         my_conn: st.conn_seq.fetch_add(1, Ordering::SeqCst) + 1,
         link_local: sock.local_addr().map(|a| a.ip().to_string()).ok(),
         device_id: None,
         seq: 0,
-        preauth: Some(preauth),
+        preauth: Some((preauth, ip)),
     };
+    let ip = ip.to_string();
     if let Err(e) = session(&st, sock, &ip, &mut s).await {
         tracing::info!("control {ip} [conn {}]: {e}", s.my_conn);
     }
@@ -157,6 +188,13 @@ async fn session(
                             if issued.is_some() { st.save_paired(); }
                             let resend: Option<meshcore::proto::Plan> = {
                                 let mut d = st.devices.write().unwrap();
+                                // Re-check under the devices guard: a Forget that ran between verify and
+                                // here must not resurrect the device as a ghost entry (round-6 #6).
+                                if !st.pairing.lock().unwrap().is_paired(&h.device_id) {
+                                    drop(d);
+                                    sock.write_all(&framing::encode(&env(0, Body::Bye(meshcore::proto::Bye { reason: "forgotten by the coordinator".into() })))).await?;
+                                    anyhow::bail!("{} was forgotten during its Hello", h.device_id);
+                                }
                                 let rpc = if h.rpc_port == 0 { meshcore::RPC_PORT } else { h.rpc_port as u16 };
                                 let e = d.entry(h.device_id.clone()).or_insert_with(|| AppState::new_remote_device(&h.device_id, &h.display_name, ip, rpc));
                                 e.online = true; e.addr = Some(ip.to_string()); e.name = h.display_name.clone(); e.last_seen_ms = now_ms();
@@ -168,8 +206,8 @@ async fn session(
                                     (Some(p), Some(cur)) if p.plan_id == cur => {
                                         // Restore membership fully: has_plan *and* role (round-5 #2).
                                         e.has_plan = true;
-                                        let mine = p.placements.iter().find(|pl| pl.device_id == h.device_id);
-                                        e.role = match mine { Some(pl) if pl.is_host => "host", _ => "worker" }.into();
+                                        let mine = p.placements.iter().find(|pl| pl.device_id == h.device_id && pl.used);
+                                        e.role = match mine { Some(pl) if pl.is_host => "host", Some(_) => "worker", None => "idle" }.into();
                                         Some(p.clone())
                                     }
                                     _ => None,
@@ -529,6 +567,76 @@ mod tests {
             "cleanup must not end a run the device rejoined"
         );
         assert!(st.devices.read().unwrap().get("p7").unwrap().has_plan);
+    }
+
+    #[tokio::test]
+    async fn stop_withdraws_a_resent_plan_and_nothing_is_resent_after_a_stop() {
+        // Round-6 #2: a phone that reconnected and was handed the current plan must receive the
+        // stop; after the stop a reconnect gets nothing.
+        let st = test_state();
+        let (port, sock, secret, _buf) = pair(&st, "p9").await;
+        drop(sock);
+        assert!(wait_offline(&st, "p9").await);
+        fake_run(&st, "p9", "plan-G", "worker");
+        st.devices.write().unwrap().get_mut("p9").unwrap().has_plan = false;
+        let (mut sock2, mut buf2) = reconnect(port, "p9", &secret).await;
+        let e = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            read_env(&mut sock2, &mut buf2),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(&e.body, Some(Body::Plan(p)) if p.plan_id == "plan-G"));
+        crate::supervisor::stop(&st).await;
+        let e = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            read_env(&mut sock2, &mut buf2),
+        )
+        .await
+        .expect("the stop must reach the reconnected member");
+        assert!(matches!(&e.body, Some(Body::Plan(p)) if p.plan_id == "stop"));
+        drop(sock2);
+        assert!(wait_offline(&st, "p9").await);
+        let (mut sock3, mut buf3) = reconnect(port, "p9", &secret).await;
+        let r = tokio::time::timeout(
+            std::time::Duration::from_millis(800),
+            read_env(&mut sock3, &mut buf3),
+        )
+        .await;
+        assert!(
+            r.is_err(),
+            "no plan may be re-sent after the run was stopped, got {r:?}"
+        );
+        assert!(!st.devices.read().unwrap().get("p9").unwrap().has_plan);
+    }
+
+    #[tokio::test]
+    async fn preauth_pool_is_per_ip_and_released() {
+        let st = test_state();
+        let (port, _sock, _secret, _buf) = pair(&st, "p10").await; // authenticated: holds no pre-auth slot
+        let mut silent = Vec::new();
+        for _ in 0..MAX_PREAUTH_PER_IP {
+            silent.push(TcpStream::connect(("127.0.0.1", port)).await.unwrap());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let mut extra = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut b = Vec::new();
+        let closed = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            try_read_env(&mut extra, &mut b),
+        )
+        .await
+        .expect("the 5th pre-auth socket from one address must be dropped at once");
+        assert!(closed.is_none());
+        drop(silent); // slots are released when the unpaired sockets close
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let mut again = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let r = tokio::time::timeout(
+            std::time::Duration::from_millis(800),
+            try_read_env(&mut again, &mut b),
+        )
+        .await;
+        assert!(r.is_err(), "after release a new pre-auth socket must be accepted (kept open until the Hello deadline), got {r:?}");
     }
 
     #[tokio::test]
