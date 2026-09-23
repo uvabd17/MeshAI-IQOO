@@ -4,6 +4,9 @@
 syntax = "proto3";
 package meshai.v0;
 
+option java_package = "ai.meshai.proto";
+option java_multiple_files = true;
+
 message Envelope {
   uint32 version = 1;            // protocol version, starts at 0
   uint64 seq     = 2;
@@ -78,6 +81,10 @@ message Placement {
   Backend backend     = 5;
   uint64  bytes       = 6;   // weights + KV this device must hold
   string  reason      = 7;   // human-readable: "holds 31 layers (8.4 GB of 8.9 GB free)" or "rejected: RTT p95 41 ms"
+  string  addr        = 8;   // ip of this device as seen by the coordinator (so a phone host can reach its workers)
+  uint32  rpc_port    = 9;
+  double  split_weight= 10;  // llama.cpp --tensor-split share (workers only)
+  bool    is_host     = 11;
 }
 
 message Plan {
@@ -88,6 +95,9 @@ message Plan {
   uint32  n_ctx      = 5;
   repeated Placement placements = 6;
   string  summary    = 7;    // one line for the dashboards
+  string  model_file = 8;    // GGUF file name in the coordinator catalog (GET /api/models/file/<model_file>)
+  string  coordinator= 9;    // "ip:api_port" of meshd, for model fetch
+  uint32  n_threads  = 10;   // suggested worker thread count (0 = device decides)
 }
 
 // ---- background jobs ----------------------------------------------------------------

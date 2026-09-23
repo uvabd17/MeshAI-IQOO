@@ -12,6 +12,7 @@ set -euo pipefail
 
 NDK="${ANDROID_NDK_HOME:-$HOME/Android/Sdk/ndk/28.2.13676358}"   # r28+ => 16 KB page alignment by default
 LLAMA_SRC="${LLAMA_SRC:-$(cd "$(dirname "$0")/.." && pwd)/third_party/llama.cpp}"
+export MESHAI_MODELS="${MESHAI_MODELS:-/mnt/storage/meshai/models}"
 ABI=arm64-v8a
 PLATFORM=android-30                                                # minSdk 30: thermal headroom API
 ARCH_FLAGS="-march=armv8.2-a+dotprod+i8mm"                         # capability floor: Tier B and up

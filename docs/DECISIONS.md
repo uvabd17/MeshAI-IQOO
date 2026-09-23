@@ -25,3 +25,15 @@ Format: **D### — title** · date · context · decision · alternatives reject
 
 ## D008 — Own hotspot or USB tethering; Wi-Fi Aware/Direct deferred
 2026-09-23 · Linux laptops lack practical NAN support; venue Wi-Fi isolates clients. USB tethering is the low-jitter default and charges the phone. Status: accepted, measure both in T004.
+
+## D009 — Any device can be the model host; the coordinator stays on the laptop
+2026-09-24 · The user wants input/output on a chosen device (phone or laptop) with every other device as pure compute. **Decision:** three roles. *Coordinator* (`meshd`, laptop): pairing, planning, admin panel, telemetry. *Host* (any paired device): runs `llama-server` with `--rpc <workers>`, owns the session, serves `/v1`; `meshd` proxies `localhost:8080/v1` to it. *Worker*: runs `ggml-rpc-server`. Selecting a host in the admin panel flips the others to worker. Both binaries ship for arm64 and x86-64. **Rejected:** host fixed to laptop (simpler, but not what the product promises). Status: accepted.
+
+## D010 — Android v1 runs llama.cpp as child processes from the app's native-lib dir; in-process JNI embed is Phase 2
+2026-09-24 · Executables packaged as `jniLibs/<abi>/lib*.so` are extracted with exec permission and can be spawned from `applicationInfo.nativeLibraryDir`; the child inherits the app's cpuset and UID sandbox. This gives host mode (`llama-server`) and worker mode (`ggml-rpc-server`) on the phone immediately, with no Termux and no terminal, and reuses the verified arm64 build. **Cost:** per-process memory accounting (LMK may kill the child first; the FGS keeps the parent) and process-spawn latency. **Rejected for v1:** `ggml_backend_rpc_start_server` via JNI (better, but blocks host mode and costs a week). Status: accepted; revisit after Phase 0 numbers.
+
+## D011 — Model catalog lives on /mnt/storage (HDD); warm before demo
+2026-09-24 · NVMe has 22 GB free; the HDD has 72 GB at ~80 MB/s. `MESHAI_MODELS=/mnt/storage/meshai/models`. First load of an 18.6 GB model ≈ 3 min; the admin panel shows a preload state and offers "pin to fast disk". Status: accepted.
+
+## D012 — Demo model set
+2026-09-24 · Cloud reference: pluggable OpenAI-compatible provider (default Claude Sonnet 5). Laptop baseline: Qwen3-8B Q4_K_M (5.0 GB, 36 layers). Budget-laptop story: gpt-oss-20b MXFP4 (12.1 GB, 24 layers) with laptop capped at 6 GB. Mesh headline: Qwen3-Coder-30B-A3B Q4_K_M (18.6 GB, 48 layers). Test: Qwen3-0.6B Q8_0. Status: accepted.

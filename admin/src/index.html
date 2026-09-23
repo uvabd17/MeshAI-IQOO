@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeshAI</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23000'/%3E%3Ccircle cx='9' cy='16' r='3' fill='%23fff'/%3E%3Ccircle cx='23' cy='9' r='3' fill='%23fff'/%3E%3Ccircle cx='23' cy='23' r='3' fill='%23fff'/%3E%3Cpath d='M11.5 14.5 20.5 10M11.5 17.5 20.5 22' stroke='%23fff' stroke-width='2'/%3E%3C/svg%3E">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7"/><circle cx="9" cy="16" r="3"/><circle cx="23" cy="9" r="3"/><circle cx="23" cy="23" r="3"/><path d="M11.5 14.5 20.5 10M11.5 17.5 20.5 22"/></svg>
+      <div><div class="brand-name">MeshAI</div><div class="brand-sub" id="mesh-id">—</div></div>
+    </div>
+    <nav class="nav" id="nav">
+      <button data-view="overview" class="active"><i data-i="grid"></i>Overview</button>
+      <button data-view="devices"><i data-i="phone"></i>Devices</button>
+      <button data-view="models"><i data-i="box"></i>Models</button>
+      <button data-view="plan"><i data-i="layers"></i>Plan</button>
+      <button data-view="chat"><i data-i="chat"></i>Chat</button>
+      <button data-view="runs"><i data-i="chart"></i>Analytics</button>
+    </nav>
+    <div class="side-foot">
+      <button class="btn ghost sm" id="theme"><i data-i="sun"></i><span>Theme</span></button>
+      <div class="muted xs" id="api-url">localhost:8080/v1</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <div class="status" id="status-pill"><span class="dot"></span><span id="status-text">idle</span></div>
+      <div class="top-right">
+        <span class="muted sm" id="host-label"></span>
+        <button class="btn sm danger" id="stop-btn" hidden><i data-i="stop"></i>Stop</button>
+      </div>
+    </header>
+
+    <!-- OVERVIEW -->
+    <section class="view" id="view-overview">
+      <div class="grid2">
+        <div class="card">
+          <div class="card-h"><h3>Topology</h3><span class="muted sm" id="topo-sub">no plan</span></div>
+          <div id="topology" class="topology"></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h3>Quick start</h3></div>
+          <div class="form">
+            <label>Model <select id="qs-model"></select></label>
+            <label>Context <select id="qs-ctx"><option>2048</option><option selected>4096</option><option>8192</option><option>16384</option></select></label>
+            <label>Host <select id="qs-host"><option value="">auto (fastest that fits)</option></select></label>
+            <div class="row">
+              <button class="btn" id="qs-plan"><i data-i="layers"></i>Preview plan</button>
+              <button class="btn primary" id="qs-run"><i data-i="play"></i>Run</button>
+            </div>
+          </div>
+          <div id="qs-result" class="plan-mini"></div>
+        </div>
+      </div>
+      <div class="grid3" id="ov-stats"></div>
+      <div class="card"><div class="card-h"><h3>Host log</h3></div><pre class="log" id="log"></pre></div>
+    </section>
+
+    <!-- DEVICES -->
+    <section class="view" id="view-devices" hidden>
+      <div class="grid2">
+        <div class="card">
+          <div class="card-h"><h3>Pair a phone</h3><button class="btn sm" id="offer-btn"><i data-i="qr"></i>New QR</button></div>
+          <div class="pair"><div id="qr" class="qr"></div><div class="muted sm" id="qr-text">Open the MeshAI app on the phone → Join → scan. Both devices must be on your own hotspot or USB tethering.</div></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h3>Simulate phones</h3><span class="muted sm">for testing without hardware</span></div>
+          <div class="form">
+            <label>Count <input id="sim-n" type="number" min="0" max="4" value="2"></label>
+            <label>Usable GB each <input id="sim-gb" type="number" step="0.5" value="8.5"></label>
+            <label class="check"><input id="sim-spawn" type="checkbox" checked> also start real local RPC workers (the split actually runs)</label>
+            <button class="btn" id="sim-btn"><i data-i="phone"></i>Apply</button>
+          </div>
+        </div>
+      </div>
+      <div class="card"><div class="card-h"><h3>Devices</h3></div><div id="devices" class="devices"></div></div>
+    </section>
+
+    <!-- MODELS -->
+    <section class="view" id="view-models" hidden>
+      <div class="card">
+        <div class="card-h"><h3>Catalog</h3><span class="muted sm" id="models-dir"></span></div>
+        <div id="catalog" class="catalog"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h3>Custom download</h3></div>
+        <div class="form row">
+          <label class="grow">URL <input id="dl-url" placeholder="https://huggingface.co/…/resolve/main/model.gguf"></label>
+          <label>File name <input id="dl-file" placeholder="model.gguf"></label>
+          <button class="btn" id="dl-btn"><i data-i="download"></i>Download</button>
+        </div>
+      </div>
+      <div class="card"><div class="card-h"><h3>On disk</h3><button class="btn sm ghost" id="rescan"><i data-i="refresh"></i>Rescan</button></div><div id="disk" class="table"></div></div>
+    </section>
+
+    <!-- PLAN -->
+    <section class="view" id="view-plan" hidden>
+      <div class="card">
+        <div class="card-h"><h3>Placement</h3><span class="muted sm" id="plan-summary"></span></div>
+        <div id="layer-map" class="layer-map"></div>
+        <div id="placements" class="placements"></div>
+      </div>
+      <div class="card"><div class="card-h"><h3>llama.cpp invocation</h3></div><pre class="log" id="plan-args"></pre></div>
+    </section>
+
+    <!-- CHAT -->
+    <section class="view" id="view-chat" hidden>
+      <div class="chat-wrap">
+        <div class="card chat-card">
+          <div class="card-h"><h3>Chat</h3><div class="row"><span class="muted sm" id="chat-model"></span><button class="btn sm ghost" id="chat-clear">Clear</button></div></div>
+          <div id="chat" class="chat"></div>
+          <form id="chat-form" class="chat-form">
+            <textarea id="chat-input" rows="2" placeholder="Ask something… (Enter to send, Shift+Enter for newline)"></textarea>
+            <button class="btn primary" type="submit" id="chat-send"><i data-i="send"></i></button>
+          </form>
+        </div>
+        <div class="card stats-card">
+          <div class="card-h"><h3>Last response</h3></div>
+          <div class="stat-grid" id="chat-stats">
+            <div class="stat"><div class="k">TTFT</div><div class="v" id="s-ttft">—</div></div>
+            <div class="stat"><div class="k">tokens/s</div><div class="v" id="s-tps">—</div></div>
+            <div class="stat"><div class="k">tokens</div><div class="v" id="s-tok">—</div></div>
+            <div class="stat"><div class="k">total</div><div class="v" id="s-total">—</div></div>
+          </div>
+          <div class="card-h"><h3>Reference</h3></div>
+          <div class="form">
+            <label>Cloud endpoint <input id="ref-url" placeholder="https://api.openai.com/v1 or Anthropic-compatible"></label>
+            <label>API key <input id="ref-key" type="password" placeholder="sk-…"></label>
+            <label>Model <input id="ref-model" placeholder="gpt-4o-mini / claude-sonnet-5"></label>
+            <button class="btn sm" id="ref-send"><i data-i="cloud"></i>Send same prompt to cloud</button>
+          </div>
+          <div class="stat-grid" id="ref-stats">
+            <div class="stat"><div class="k">cloud TTFT</div><div class="v" id="r-ttft">—</div></div>
+            <div class="stat"><div class="k">cloud tok/s</div><div class="v" id="r-tps">—</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RUNS -->
+    <section class="view" id="view-runs" hidden>
+      <div class="grid3" id="runs-stats"></div>
+      <div class="card"><div class="card-h"><h3>Decode speed by setup</h3></div><div id="runs-bars" class="bars"></div></div>
+      <div class="card"><div class="card-h"><h3>Requests</h3></div><div id="runs-table" class="table"></div></div>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
