@@ -8,7 +8,7 @@
       "covers": "syntax, JSON schema, agent/skill frontmatter, proto (when protoc), cargo/gradle unit tests when present",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "23 ok, 0 failed (2026-09-24 04:05, after round-3 commit)"
+      "evidence": "24 ok, 0 failed (2026-09-24, after round-4 commit)"
     },
     {
       "id": "V002",
@@ -35,7 +35,7 @@
       "covers": "gguf parser on real file, planner rules, framing, pairing secrets, llama arg derivation (ngl+1/tensor-split), model name validation, control-plane heartbeat/reconnect over a real socket (tokio), planner device growth",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "24 passed (13 meshcore + 11 meshd) after round-4; clippy --all-targets -D warnings clean"
+      "evidence": "27 passed (13 meshcore + 14 meshd) after round-5; clippy --all-targets -D warnings clean"
     },
     {
       "id": "V005",
@@ -44,7 +44,7 @@
       "covers": "T009/T012 run path incl. worker wait, host watcher, /v1 proxy rows",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 04:40 (round-4 build): ready, 3 chats 21.1–24.6 tok/s client, stop ok (scripts/split-sim.sh)"
+      "evidence": "PASS 2026-09-24 05:20 (round-5 build) via scripts/qa/run-guards.sh: ready, 3 chats, stop ok"
     },
     {
       "id": "V006",
@@ -53,7 +53,7 @@
       "covers": "T031: plan preview, Run, ready, layer map, chat + timings, analytics, QR, catalog",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 04:45 (round-4 build): plan → run → ready 2.0 s → layer map → chat 198 ms TTFT / 22.6 tok/s / 34 tok → analytics 23 requests → devices 3 → QR → catalog 4 → disk 3; 0 console errors, 0 failed requests (scripts/qa/admin-qa.mjs)"
+      "evidence": "PASS 2026-09-24 05:22 (round-5 build): run → ready 2.0 s → layer map → chat 193 ms TTFT / 23.5 tok/s / 24 tok → analytics 27 requests → devices/QR/catalog/disk; 0 console errors, 0 failed requests"
     },
     {
       "id": "V007",
@@ -62,7 +62,7 @@
       "covers": "T020 NewApi and manifest rules",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 04:35: lint + testDebugUnitTest (4) + assembleDebug, app-debug.apk 80.9 MB"
+      "evidence": "PASS 2026-09-24 05:15: lint + testDebugUnitTest (4) + assembleDebug after round-5 Kotlin changes"
     },
     {
       "id": "V008",
@@ -80,7 +80,7 @@
       "covers": "N5/M10: background bring-up with generation; stop is not blocked",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS 2026-09-24 04:41 (round-4 build): stop at 0.05/0.3/1.0/2.5 s into bring-up → 114–124 ms, status idle, 0 orphans, sim workers untouched (scripts/qa/stop-race.sh)"
+      "evidence": "PASS 2026-09-24 05:20 (round-5 build): stop at 0.05/0.3/1.0/2.5 s into bring-up, 114–124 ms, 0 orphans"
     },
     {
       "id": "V010",
@@ -89,7 +89,7 @@
       "covers": "heartbeats under telemetry load (≥3 in 25 s), secret reconnect supersedes and closes the old socket, wrong secret → Bye, plan re-sent on reconnect + has_plan, failure report honoured only for the current plan id, idle vs member disconnect, forget → Bye + close, silent link dropped, pre-auth 4 KiB frame cap, 5 s Hello deadline",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "6 control tests pass (26.3 s wall); 24 total (13 meshcore + 11 meshd)"
+      "evidence": "9 control tests pass (26.3 s wall): + reconnect→re-send→drop ends the run, reconnect that wins while cleanup waits keeps the run, forgetting a member ends the run + Bye + pairing gone"
     },
     {
       "id": "V011",
@@ -103,11 +103,11 @@
     {
       "id": "V012",
       "name": "run/forget guards on a live run",
-      "cmd": "scratchpad r4-runtime.sh (curl): 416 header, refused phone-host, DELETE device mid-run",
+      "cmd": "scripts/qa/run-guards.sh",
       "covers": "416 carries Content-Range */len; POST /api/run with a phone host and no --lan → 422 and the current run stays ready; DELETE /api/devices/{id} on a run member → run error 'was forgotten', device removed",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "HTTP 416 content-range: bytes */639446688; 422 + run status ready (1 llama-server); forget → status error, 'device sim-phone-1 was forgotten', devices 2"
+      "evidence": "PASS 2026-09-24 05:21 (round-5 build, precheck→stop→plan): 416 content-range bytes */639446688; phone-host request 422 with run still ready; forget member → error 'was forgotten', devices 2"
     }
   ]
 }

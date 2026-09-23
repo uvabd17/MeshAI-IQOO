@@ -56,6 +56,10 @@ pub struct Device {
 }
 
 impl Device {
+    /// The single membership predicate used by cleanup, forget and failure reports (round-5 #2).
+    pub fn in_run(&self) -> bool {
+        self.has_plan || self.role == "host" || self.role == "worker"
+    }
     pub fn usable_bytes(&self) -> u64 {
         if let Some(o) = self.usable_override_bytes {
             return o;
@@ -469,6 +473,27 @@ impl AppState {
         let mut plan = planner::plan(&m.info, &caps, n_ctx, &pol)?;
         plan.model = m.file.clone(); // the file name is the stable id across coordinator and phones
         Ok(plan)
+    }
+
+    /// Cheap checks that must pass *before* the current run is stopped (round-4 #12) — the plan
+    /// itself is made only after the stop so the planner sees the freed memory (M4, round-5 #1).
+    pub fn precheck_run(&self, model_file: &str, host: Option<&str>) -> Result<(), String> {
+        if self.model(model_file).is_none() {
+            return Err(format!("model not found: {model_file}"));
+        }
+        if let Some(h) = host {
+            let d = self.devices.read().unwrap();
+            let Some(dev) = d.get(h) else {
+                return Err(format!("unknown host device: {h}"));
+            };
+            if !dev.is_local && !self.lan {
+                return Err("a phone can only be the host when meshd runs with --lan --api-token (it fetches the model from this API)".into());
+            }
+            if !dev.is_local && !dev.online {
+                return Err(format!("host device {h} is offline"));
+            }
+        }
+        Ok(())
     }
 
     pub fn set_roles_from_plan(&self, plan: &Plan) {

@@ -51,22 +51,20 @@ class MeshService : Service() {
     private val linkGen = java.util.concurrent.atomic.AtomicInteger(0)
     /** Owned by the actor coroutine only. */
     private var planJob: Job? = null
-    /** Plan id the current process belongs to, for failure reports (round-4 #1). */
-    @Volatile private var activePlanId = ""
 
     override fun onCreate() {
         super.onCreate()
         profiler = Profiler(this)
         runner = LlamaRunner(this)
         client = ControlClient(this, scope, profiler, { plans.send(Queued(it, linkGen.get())) }, ::onLinkLost)
-        runner.onExit = { role, code -> if (code != 0 && (role == "worker" || role == "host")) report(role, false, "$role process exited ($code)") }
+        runner.onExit = { role, planId, code -> if (code != 0 && (role == "worker" || role == "host")) report(role, false, "$role process exited ($code)", planId) }
         // Actor: one plan at a time, in arrival order. A newer plan (or a stop) cancels and joins the running one
         // before it starts, so a stop can never be queued behind a long model download.
         scope.launch {
             for (q in plans) {
                 if (q.linkGen != linkGen.get()) { MeshState.log("dropping plan ${q.plan.planId} queued on a lost link"); continue }
                 planJob?.cancel(); planJob?.join()
-                planJob = scope.launch { applyPlan(q.plan) }
+                planJob = scope.launch { applyPlan(q.plan, q.linkGen) }
             }
         }
         MeshState.set { it.copy(threads = profiler.workerThreads(), cpusAllowed = profiler.cpusAllowed(), tier = profiler.tier().name.removePrefix("TIER_")) }
@@ -82,16 +80,17 @@ class MeshService : Service() {
             ACTION_LEAVE -> { runner.stop(); client.disconnect(); releaseLocks(); MeshState.set { it.copy(role = "idle", planSummary = "", modelFile = "") }; stopSelf() }
             ACTION_STOP_PROCESS -> {
                 val role = runner.currentRole
+                val planId = MeshState.currentPlan?.planId ?: ""
                 runner.stop(); MeshState.set { it.copy(role = "idle") }
-                if (role.isNotEmpty()) report(role, false, "$role stopped from the phone") // meshd must not keep showing "ready" (round-4 #11)
+                if (role.isNotEmpty()) report(role, false, "$role stopped from the phone", planId) // meshd must not keep showing "ready" (round-4 #11)
             }
         }
         return START_STICKY
     }
 
     /** Tell the coordinator about a failed process or a refused plan (round-3 #2/L2). */
-    private fun report(job: String, ok: Boolean, note: String) =
-        client.notify(envelope { jobResult = jobResult { jobId = job; this.ok = ok; output = note.toByteArray().toByteString(); planId = activePlanId } })
+    private fun report(job: String, ok: Boolean, note: String, planId: String) =
+        client.notify(envelope { jobResult = jobResult { jobId = job; this.ok = ok; output = note.toByteArray().toByteString(); this.planId = planId } })
 
     /** Runs on the control client's IO thread: kill now (and disarm the runner), then let the actor settle. */
     private fun onLinkLost() {
@@ -102,9 +101,8 @@ class MeshService : Service() {
         updateNotification("Reconnecting…")
     }
 
-    private suspend fun applyPlan(plan: Plan) {
+    private suspend fun applyPlan(plan: Plan, gen: Int) {
         MeshState.currentPlan = plan
-        activePlanId = plan.planId
         val me = plan.placementsList.firstOrNull { it.deviceId == profiler.deviceId }
         if (plan.planId == "stop" || me == null || !me.used) {
             runner.stop()
@@ -115,12 +113,12 @@ class MeshService : Service() {
         if (profiler.tier() == Tier.TIER_UNSUPPORTED) {
             MeshState.log("✗ refusing plan: this phone is below the floor (arm64 + dotprod + i8mm, ≥ 8 GB)")
             MeshState.set { it.copy(lastError = "unsupported device", role = "idle") }
-            report("plan", false, "unsupported device (needs arm64 + dotprod + i8mm, ≥ 8 GB)")
+            report("plan", false, "unsupported device (needs arm64 + dotprod + i8mm, ≥ 8 GB)", plan.planId)
             return
         }
         val threads = if (plan.nThreads > 0) plan.nThreads else profiler.workerThreads()
         val bind = client.linkLocalAddress ?: "127.0.0.1"
-        runner.arm() // a stop/link loss from now on disarms it and any later start is refused
+        runner.arm { linkGen.get() == gen } // a stop disarms; a link loss after this point makes the start refuse itself
         applyPlanInner(plan, me, threads, bind)
     }
 
@@ -134,15 +132,20 @@ class MeshService : Service() {
                 val file = runner.ensureModel("http://$coord", plan.modelFile)
                 kotlinx.coroutines.currentCoroutineContext().ensureActive() // a stop/link loss during the download must not start the host
                 val workers = plan.placementsList.filter { it.used && !it.isHost }
-                runner.startHost(bind, file, plan.nCtx, threads, workers.map { it.addr to it.rpcPort }, workers.map { it.layerEnd - it.layerStart })
+                val r = runner.startHost(bind, file, plan.nCtx, threads, workers.map { it.addr to it.rpcPort }, workers.map { it.layerEnd - it.layerStart }, plan.planId)
+                if (r == LlamaRunner.Start.FAILED) report("host", false, "could not start llama-server", plan.planId) // a REFUSED start is a stop, not a failure
             } catch (e: kotlinx.coroutines.CancellationException) { throw e
-            } catch (e: Exception) { MeshState.log("✗ host: ${e.message}"); MeshState.set { it.copy(lastError = e.message) }; report("host", false, e.message ?: "host start failed") }
+            } catch (e: Exception) { MeshState.log("✗ host: ${e.message}"); MeshState.set { it.copy(lastError = e.message) }; report("host", false, e.message ?: "host start failed", plan.planId) }
         } else {
             MeshState.set { it.copy(role = "worker") }
             updateNotification("Worker: layers ${me.layerStart}–${me.layerEnd - 1}")
             val port = me.rpcPort.takeIf { it > 0 } ?: 50052
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            if (runner.startWorker(bind, port, threads)) scope.launch { reportListening(bind, port, plan.planId) } else report("worker", false, "could not start the RPC worker")
+            when (runner.startWorker(bind, port, threads, plan.planId)) {
+                LlamaRunner.Start.STARTED -> reportListening(bind, port, plan.planId) // child of planJob: cancelled with it (round-5 #3)
+                LlamaRunner.Start.FAILED -> report("worker", false, "could not start the RPC worker", plan.planId)
+                LlamaRunner.Start.REFUSED -> {} // stopped or link lost meanwhile: nothing to report
+            }
         }
     }
 
