@@ -94,7 +94,7 @@ class MeshService : Service() {
     }
     private fun updateNotification(text: String) = getSystemService(android.app.NotificationManager::class.java).notify(1, notification(text))
 
-    override fun onTrimMemory(level: Int) { super.onTrimMemory(level); client.trimLevel = level; if (level >= TRIM_MEMORY_RUNNING_LOW) MeshState.log("⚠ onTrimMemory($level)") }
+    override fun onTrimMemory(level: Int) { super.onTrimMemory(level); client.trimLevel = level; if (level >= 10 /* TRIM_MEMORY_RUNNING_LOW */) MeshState.log("⚠ onTrimMemory($level)") }
     override fun onDestroy() { runner.stop(); client.disconnect(); releaseLocks(); scope.cancel(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
 
