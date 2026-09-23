@@ -66,10 +66,9 @@ pub fn llama_args(st: &AppState, plan: &Plan) -> anyhow::Result<LlamaArgs> {
         meshcore::HOST_LLAMA_PORT.to_string(),
         "--jinja".into(),
         "--metrics".into(),
-        // Demo default: answer directly. Qwen3's template honours enable_thinking=false;
-        // other templates ignore unknown kwargs.
-        "--chat-template-kwargs".into(),
-        "{\"enable_thinking\":false}".into(),
+        // Demo default: answer directly (Qwen3 thinking off). Per-request override is a Phase-2 knob.
+        "--reasoning".into(),
+        "off".into(),
     ];
     if plan.mode == Mode::LayerSplit && !workers.is_empty() {
         args.push("--rpc".into());
