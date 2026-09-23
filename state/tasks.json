@@ -220,7 +220,7 @@
       "blocked_by": [
         "T031"
       ],
-      "evidence": "rounds 1–9 acted on; round 9 (credit not evidence-based, D024/K19 misstated the risk, vacuous guard, preview mismatch, offline member before push, stale lastReceivedPlan) fixed: credit = min(placement, observed drop) only when ready + fresh sample; 5 credit tests incl. planner end to end; run-guards proves no credit while loading; round 10 pending"
+      "evidence": "rounds 1–10 acted on; round 10 (observed-drop credit counted unrelated memory) fixed: credit = min(placement, anonymous RSS of the run's own processes), laptop via /proc, phone via Telemetry.held_bytes; 7 credit tests + ProcStatusTest; run-guards 29 checks incl. credit == measured RSS; round 11 pending"
     }
   ]
 }

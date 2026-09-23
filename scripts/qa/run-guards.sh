@@ -32,8 +32,9 @@ check "$code" 422 "unknown model → 422"; check "$(status)" ready "run still re
 BIG="${BIG_MODEL:-Qwen3-8B-Q4_K_M.gguf}"
 if api localhost:8080/api/state | jq -e --arg m "$BIG" '.models[] | select(.file==$m)' >/dev/null; then
   code=$(curl -s -o "$OUT/refused3.json" -w '%{http_code}' -m 20 -H 'content-type: application/json' -X POST localhost:8080/api/run -d "{\"model\":\"$BIG\",\"n_ctx\":2048}")
+  PID_BEFORE=$(api localhost:8080/api/state | jq -r '.run.plan_id')
   check "$code" 422 "shortfall no stop could cure ($BIG on the capped pool) → 422"
-  check "$(grep -c 'previous run stopped' "$OUT/refused3.json")" 0 "…refused WITHOUT stopping the live run"
+  check "$(api localhost:8080/api/state | jq -r '.run.plan_id')" "$PID_BEFORE" "…refused WITHOUT stopping the live run (plan_id unchanged)"
   check "$(status)" ready "run still ready after the shortfall refusal"
 else echo "  skip shortfall guard ($BIG not in catalog)"; fi
 check "$(pgrep -x llama-server | wc -l)" 1 "exactly one llama-server alive"
@@ -45,13 +46,15 @@ RESP=$(api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":20
 check "$(echo "$RESP" | jq -r '.ok')" true "immediate re-run accepted (fits uncredited)"
 check "$(echo "$RESP" | jq -r '.credited | length')" 0 "a run that is not ready earns NO credit"
 check "$(wait_settled)" ready "laptop-alone run ready"; check "$(api localhost:8080/api/state | jq -r '.plan.mode')" Single "fits on the laptop alone (no split)"
-HELD=$(api localhost:8080/api/state | jq -r '.plan.placements[] | select(.device_id=="local") | .bytes')
-sleep 3   # let a post-ready laptop memory sample land
+PLACED=$(api localhost:8080/api/state | jq -r '.plan.placements[] | select(.device_id=="local") | .bytes')
+sleep 3   # let a post-ready laptop sample land (the periodic refresh also measures the children's RSS)
+HELDB=$(api localhost:8080/api/state | jq -r '.devices[] | select(.id=="local") | .telemetry.held_bytes // 0')
 RESP=$(api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":4096}")
 check "$(echo "$RESP" | jq -r '.ok')" true "replacement request accepted"
 CRED=$(echo "$RESP" | jq -r '[.credited[] | select(.[0]=="local") | .[1]] | .[0] // 0')
-echo "  info credit for local = $CRED B (observed drop, capped at the placement's $HELD B)"
-check "$(( CRED <= HELD ))" 1 "credit never exceeds the placement bytes"
+echo "  info local: llama-server anonymous RSS = $HELDB B, placement = $PLACED B, credit = $CRED B"
+check "$(( CRED > 0 ))" 1 "a ready run's held memory earns a credit"
+check "$(( CRED <= PLACED && CRED <= HELDB + 200000000 ))" 1 "credit ≤ placement and ≤ held RSS (+0.2 GB sample skew)"
 check "$(wait_settled)" ready "replacement run ready (ctx 4096)"
 if [[ "$CRED" -gt 0 ]]; then check "$(api localhost:8080/api/state | jq -r '.run.log_tail | map(select(test("plan credits"))) | length')" 1 "run log names the credit"; fi
 api -X POST localhost:8080/api/stop >/dev/null

@@ -88,7 +88,7 @@ class Profiler(private val ctx: Context) {
         }
     }
 
-    fun telemetry(decodeTps: Float, trimLevel: Int): Telemetry {
+    fun telemetry(decodeTps: Float, trimLevel: Int, heldBytes: Long = 0L): Telemetry {
         val mi = memInfo()
         val headroom = runCatching { pm.getThermalHeadroom(10) }.getOrDefault(Float.NaN)
         val status = runCatching { pm.currentThermalStatus }.getOrDefault(0)
@@ -98,6 +98,7 @@ class Profiler(private val ctx: Context) {
         return telemetry {
             deviceId = this@Profiler.deviceId
             availBytes = mi.availMem
+            this.heldBytes = heldBytes
             thermalHeadroom = if (headroom.isNaN()) 0f else headroom
             thermalStatus = status
             batteryPct = level.toFloat()

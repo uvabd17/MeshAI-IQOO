@@ -69,6 +69,18 @@ class LlamaRunner(private val ctx: Context) {
         return Start.STARTED
     }
 
+    /**
+     * Anonymous RSS of our child process (what a stop returns to MemAvailable), for `Telemetry.held_bytes` (D024).
+     * Android lets a parent read its own child's /proc status; 0 when nothing runs or the read fails.
+     */
+    fun heldBytes(): Long = proc?.let { p ->
+        runCatching {
+            // Android's java.lang.Process has no pid() accessor (API 33+ only); UNIXProcess keeps it in a private field.
+            val f = p.javaClass.getDeclaredField("pid").apply { isAccessible = true }
+            ProcStatus.rssAnonBytes(java.io.File("/proc/${f.getInt(p)}/status").readText())
+        }.getOrDefault(0L)
+    } ?: 0L
+
     /** Stop and disarm. Returns the (role, planId) that was running, so the caller can report it. */
     fun stop(): Pair<String, String>? {
         val had = gate.disarm { killProcess() } // under the gate lock; any exit callback of the old process is now stale

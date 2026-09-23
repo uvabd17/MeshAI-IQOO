@@ -30,6 +30,8 @@ class ControlClient(
     private val profiler: Profiler,
     private val onPlan: suspend (Plan) -> Unit,
     private val onLinkLost: () -> Unit,
+    /** Anonymous RSS of this phone's llama.cpp child (D024 credit); the service wires LlamaRunner.heldBytes. */
+    private val heldBytes: () -> Long = { 0L },
 ) {
     private val prefs = ctx.getSharedPreferences("meshai", Context.MODE_PRIVATE)
     private var job: Job? = null
@@ -87,7 +89,7 @@ class ControlClient(
                         val tele = launch {
                             while (isActive) {
                                 profiler.sampleRtt(p.host, p.controlPort)
-                                val t = profiler.telemetry(if (decodeTps > 0f) decodeTps else MeshState.ui.value.decodeTps, trimLevel)
+                                val t = profiler.telemetry(if (decodeTps > 0f) decodeTps else MeshState.ui.value.decodeTps, trimLevel, heldBytes())
                                 MeshState.set { it.copy(availBytes = t.availBytes, thermalHeadroom = t.thermalHeadroom, thermalStatus = t.thermalStatus, batteryPct = t.batteryPct.toInt(), charging = t.charging, rttP50 = t.rttMsP50, rttP95 = t.rttMsP95, cpusAllowed = t.cpusAllowed, totalBytes = profiler.memInfo().totalMem, decodeTps = maxOf(it.decodeTps, decodeTps)) }
                                 runCatching { send(envelope { telemetry = t }) }
                                 delay(2000)
