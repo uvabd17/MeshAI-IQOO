@@ -35,7 +35,7 @@
       "covers": "gguf parser on real file, planner rules, framing, pairing secrets, llama arg derivation (ngl+1/tensor-split), model name validation",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "14 passed"
+      "evidence": "17 passed (gguf on real file, planner incl. tier gate/greedy fill/tie-break, framing, pairing secrets + takeover refusal, arg derivation, model name validation, mirror snapshot leak test)"
     },
     {
       "id": "V005",
@@ -44,7 +44,7 @@
       "covers": "T009/T012 run path incl. worker wait, host watcher, /v1 proxy rows",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "ready in ~5 s; 22 tok/s server, 19–21 tok/s client; placement matches llama.cpp verbose log"
+      "evidence": "dd64158: ready ~5 s; server 91.7 tok/s prompt / 10.8 tok/s gen (machine loaded), earlier 113 / 22 on a quiet machine; placement == llama.cpp verbose log"
     },
     {
       "id": "V006",
@@ -63,6 +63,24 @@
       "last_run": "2026-09-24",
       "status": "PASS",
       "evidence": "gradle lint + assembleDebug clean after Profiler API-31 guard (2026-09-24)"
+    },
+    {
+      "id": "V008",
+      "name": "request guards",
+      "cmd": "curl: form POST /api/stop; Host: evil; Range on model file; --lan without token; token 401/200",
+      "covers": "C1/D021: 415 on non-JSON mutation, 403 on non-loopback Host, 206 Range, --lan refuses without token, token enforced",
+      "last_run": "2026-09-24",
+      "status": "PASS",
+      "evidence": "415 / 200 / 403 / 206 bytes N-M/len / 'set --api-token' / 401 then 200"
+    },
+    {
+      "id": "V009",
+      "name": "stop responsiveness",
+      "cmd": "POST /api/run then immediately POST /api/stop",
+      "covers": "N5/M10: background bring-up with generation; stop is not blocked",
+      "last_run": "2026-09-24",
+      "status": "PASS",
+      "evidence": "run 11 ms, stop 115 ms, status idle, no llama-server process left"
     }
   ]
 }
