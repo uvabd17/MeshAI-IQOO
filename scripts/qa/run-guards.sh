@@ -30,9 +30,9 @@ check "$code" 422 "n_ctx beyond n_ctx_train → 422 ($(jq -r .error "$OUT/refuse
 code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 -H 'content-type: application/json' -X POST localhost:8080/api/run -d '{"model":"no-such.gguf","n_ctx":2048}')
 check "$code" 422 "unknown model → 422"; check "$(status)" ready "run still ready after the unknown-model refusal"
 BIG="${BIG_MODEL:-Qwen3-8B-Q4_K_M.gguf}"
+PID_BEFORE=$(api localhost:8080/api/state | jq -r '.run.plan_id'); check "$([[ "$PID_BEFORE" != null ]] && echo live)" live "a run is live before the shortfall request"
 if api localhost:8080/api/state | jq -e --arg m "$BIG" '.models[] | select(.file==$m)' >/dev/null; then
   code=$(curl -s -o "$OUT/refused3.json" -w '%{http_code}' -m 20 -H 'content-type: application/json' -X POST localhost:8080/api/run -d "{\"model\":\"$BIG\",\"n_ctx\":2048}")
-  PID_BEFORE=$(api localhost:8080/api/state | jq -r '.run.plan_id')
   check "$code" 422 "shortfall no stop could cure ($BIG on the capped pool) → 422"
   check "$(api localhost:8080/api/state | jq -r '.run.plan_id')" "$PID_BEFORE" "…refused WITHOUT stopping the live run (plan_id unchanged)"
   check "$(status)" ready "run still ready after the shortfall refusal"
@@ -48,15 +48,27 @@ check "$(echo "$RESP" | jq -r '.credited | length')" 0 "a run that is not ready 
 check "$(wait_settled)" ready "laptop-alone run ready"; check "$(api localhost:8080/api/state | jq -r '.plan.mode')" Single "fits on the laptop alone (no split)"
 PLACED=$(api localhost:8080/api/state | jq -r '.plan.placements[] | select(.device_id=="local") | .bytes')
 sleep 3   # let a post-ready laptop sample land (the periodic refresh also measures the children's RSS)
-HELDB=$(api localhost:8080/api/state | jq -r '.devices[] | select(.id=="local") | .telemetry.held_bytes // 0')
+# Independent of meshd: RssAnon+RssShmem of the llama-server process straight from /proc.
+LPID=$(pgrep -x llama-server | head -1)
+PROC_RSS=$(( ( $(awk '/^RssAnon:/{print $2}' /proc/$LPID/status) + $(awk '/^RssShmem:/{print $2}' /proc/$LPID/status) ) * 1024 ))
 RESP=$(api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":4096}")
 check "$(echo "$RESP" | jq -r '.ok')" true "replacement request accepted"
 CRED=$(echo "$RESP" | jq -r '[.credited[] | select(.[0]=="local") | .[1]] | .[0] // 0')
-echo "  info local: llama-server anonymous RSS = $HELDB B, placement = $PLACED B, credit = $CRED B"
+echo "  info local: llama-server anon RSS from /proc = $PROC_RSS B, placement = $PLACED B, credit = $CRED B"
 check "$(( CRED > 0 ))" 1 "a ready run's held memory earns a credit"
-check "$(( CRED <= PLACED && CRED <= HELDB + 200000000 ))" 1 "credit ≤ placement and ≤ held RSS (+0.2 GB sample skew)"
+check "$(( CRED <= PLACED ))" 1 "credit ≤ placement"
+check "$(( CRED <= PROC_RSS + 50000000 && CRED + 50000000 >= PROC_RSS ))" 1 "credit == /proc RssAnon of llama-server (±50 MB sampling)"
 check "$(wait_settled)" ready "replacement run ready (ctx 4096)"
-if [[ "$CRED" -gt 0 ]]; then check "$(api localhost:8080/api/state | jq -r '.run.log_tail | map(select(test("plan credits"))) | length')" 1 "run log names the credit"; fi
+echo "== does a stop return the credited memory? (D024 premise, measured) =="
+api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":8192}" >/dev/null; check "$(wait_settled)" ready "ctx-8192 laptop-alone run ready"; sleep 4
+CRED8=$(api -X POST localhost:8080/api/plan -d "{\"model\":\"$MODEL\",\"n_ctx\":8192}" | jq -r '[.credited[] | select(.[0]=="local") | .[1]] | .[0] // 0')
+memavail() { local s=0; for i in 1 2 3; do s=$(( s + $(awk '/^MemAvailable:/{print $2}' /proc/meminfo) )); sleep 0.3; done; echo $(( s / 3 * 1024 )); }
+BEFORE=$(memavail); api -X POST localhost:8080/api/stop >/dev/null; sleep 2; AFTER=$(memavail)
+RELEASED=$(( AFTER - BEFORE ))
+echo "  info ctx 8192: credit = $CRED8 B, MemAvailable released by the stop = $RELEASED B (avg of 3 samples each side)"
+TOL=$(( CRED8 * 3 / 10 > 150000000 ? CRED8 * 3 / 10 : 150000000 ))
+check "$(( RELEASED > 0 && (RELEASED - CRED8 < TOL) && (CRED8 - RELEASED < TOL) ))" 1 "credit matches what the stop released (±30 % / 150 MB)"
+echo "CREDIT_VS_RELEASED $CRED8 $RELEASED" >> "$OUT/credit.log"
 api -X POST localhost:8080/api/stop >/dev/null
 api -X POST localhost:8080/api/devices/local/limit -d '{"usable_gb":0.35}' >/dev/null   # re-cap for the remaining checks
 api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":2048}" >/dev/null; check "$(wait_settled)" ready "split run ready again"

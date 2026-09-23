@@ -10,4 +10,7 @@ object ProcStatus {
         return if (anon != null) (anon + (kb("RssShmem:") ?: 0L)) * 1024
         else ((kb("VmRSS:") ?: 0L) - (kb("RssFile:") ?: 0L)).coerceAtLeast(0L) * 1024
     }
+
+    /** Android's UNIXProcess.toString() is "Process[pid=N, hasExited=false]"; 0 when it is anything else. */
+    fun pidFromToString(s: String): Int = Regex("pid=(\\d+)").find(s)?.groupValues?.get(1)?.toIntOrNull() ?: 0
 }

@@ -74,12 +74,21 @@ class LlamaRunner(private val ctx: Context) {
      * Android lets a parent read its own child's /proc status; 0 when nothing runs or the read fails.
      */
     fun heldBytes(): Long = proc?.let { p ->
-        runCatching {
-            // Android's java.lang.Process has no pid() accessor (API 33+ only); UNIXProcess keeps it in a private field.
-            val f = p.javaClass.getDeclaredField("pid").apply { isAccessible = true }
-            ProcStatus.rssAnonBytes(java.io.File("/proc/${f.getInt(p)}/status").readText())
-        }.getOrDefault(0L)
+        val pid = childPid(p)
+        val v = if (pid > 0) runCatching { ProcStatus.rssAnonBytes(java.io.File("/proc/$pid/status").readText()) }.getOrDefault(0L) else 0L
+        if (v == 0L && !warnedHeld) { warnedHeld = true; MeshState.log("⚠ cannot read the child's RSS (pid=$pid): meshd will credit nothing for this phone") }
+        v
     } ?: 0L
+    private var warnedHeld = false
+
+    /**
+     * The child's pid. `java.lang.Process.pid()` is not in the Android SDK for minSdk 30, so: the private `pid` field of
+     * UNIXProcess (hidden-API policy permitting), else the public `toString()` which is "Process[pid=N, hasExited=…]".
+     * NOT executed on a device yet (no arm64 phone on USB); a failure yields 0 → no credit (safe, D024/K19).
+     */
+    internal fun childPid(p: Process): Int =
+        runCatching { p.javaClass.getDeclaredField("pid").apply { isAccessible = true }.getInt(p) }.getOrNull()
+            ?: ProcStatus.pidFromToString(p.toString())
 
     /** Stop and disarm. Returns the (role, planId) that was running, so the caller can report it. */
     fun stop(): Pair<String, String>? {
