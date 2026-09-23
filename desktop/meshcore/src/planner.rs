@@ -256,45 +256,27 @@ pub fn plan(
         .collect();
     others.sort_by_key(|d| std::cmp::Reverse(d.usable_bytes));
 
-    let mut chosen: Vec<&DeviceCap> = vec![host];
-    let mut pooled = host.usable_bytes;
-    let mut it = others.iter();
-    while pooled < needed {
-        match it.next() {
-            Some(d) => {
-                chosen.push(d);
-                pooled += d.usable_bytes;
-            }
-            None => {
-                return Err(PlanError::DoesNotFit {
-                    needed,
-                    available: pooled,
-                })
-            }
-        }
-    }
-    let unused: Vec<&DeviceCap> = it.copied().collect();
-
-    // Greedy contiguous fill: each device takes as many consecutive layers as it can hold.
-    let caps: Vec<u64> = chosen
-        .iter()
-        .enumerate()
-        .map(|(i, d)| {
-            if i == 0 {
-                d.usable_bytes.saturating_sub(host_fixed)
-            } else {
-                d.usable_bytes
-            }
-        })
-        .collect();
+    // Greedy contiguous fill (D023): each device takes as many consecutive layers as it can hold;
+    // devices are added largest-first until every layer is placed, so whole-layer fragmentation
+    // never produces a false DoesNotFit while an eligible device is still unused.
     let mut placements = Vec::new();
     let mut next_layer = 0u32;
-    for (i, d) in chosen.iter().enumerate() {
+    let mut pooled = 0u64;
+    let mut it = others.iter();
+    let mut i = 0usize;
+    let mut d: &DeviceCap = host;
+    loop {
+        let cap = if i == 0 {
+            d.usable_bytes.saturating_sub(host_fixed)
+        } else {
+            d.usable_bytes
+        };
+        pooled += d.usable_bytes;
         let mut bytes = 0u64;
         let start = next_layer;
         while next_layer < n_layer {
             let lb = model.layer_bytes[next_layer as usize] + kv_per_layer;
-            if bytes + lb > caps[i] {
+            if bytes + lb > cap {
                 break; // never assign a layer the device cannot hold (M5), even as its first
             }
             bytes += lb;
@@ -332,13 +314,23 @@ pub fn plan(
                 )
             },
         });
+        if next_layer >= n_layer {
+            break;
+        }
+        match it.next() {
+            Some(n) => {
+                d = n;
+                i += 1;
+            }
+            None => {
+                return Err(PlanError::DoesNotFit {
+                    needed,
+                    available: pooled,
+                })
+            }
+        }
     }
-    if next_layer < n_layer {
-        return Err(PlanError::DoesNotFit {
-            needed,
-            available: pooled,
-        });
-    }
+    let unused: Vec<&DeviceCap> = it.copied().collect();
     // A worker that ended up with zero layers is not needed after all.
     placements.retain(|p| p.role == Role::Host || p.layer_end > p.layer_start);
     let sum: f64 = placements.iter().map(|p| p.split_weight).sum();
@@ -558,6 +550,28 @@ mod tests {
         }
         let tiny = p.placements.iter().find(|x| x.device_id == "tiny").unwrap();
         assert_eq!(tiny.role, Role::Rejected);
+    }
+
+    #[test]
+    fn fragmentation_adds_the_next_device_instead_of_failing() {
+        // 12 × 100 MB + 50 MB head, KV 0 → needed 1.25 GB. local 0.39 (3 layers), a/b/c 0.49 (4 each).
+        // Pooled local+a+b = 1.37 GB ≥ needed but only 11 layers fit by whole layers: c must be added.
+        let mut m = model(12, 100, 50);
+        m.kv_bytes_per_token = 0;
+        let p = plan(
+            &m,
+            &[
+                dev("local", 0.39, true, 0.0),
+                dev("a", 0.49, false, 1.0),
+                dev("b", 0.49, false, 1.0),
+                dev("c", 0.49, false, 1.0),
+            ],
+            1,
+            &Policy::default(),
+        )
+        .unwrap();
+        contiguous(&p, 12);
+        assert_eq!(used(&p).len(), 4);
     }
 
     #[test]

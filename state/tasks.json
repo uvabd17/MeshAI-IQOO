@@ -139,7 +139,7 @@
       "blocked_by": [
         "T020"
       ],
-      "evidence": "worker binds to the paired link address, killed on link loss, reports listening with plan id; arm64 path never executed on hardware"
+      "evidence": "worker binds to the paired link address, killed on link loss, listening report carries the plan id; serial plan actor; process exits reported — all implemented, NOT executed on a device (no phone on USB)"
     },
     {
       "id": "T022",
@@ -150,7 +150,7 @@
         "T021",
         "T010"
       ],
-      "evidence": "control client with token→secret pairing, 30 s read timeout, plans handled off the read loop; UniFFI dropped for v1 (D018) — held at ACTIVE until the Phase-0 gate (T007) passes on hardware (review round 2)"
+      "evidence": "control client with token→secret pairing, 45 s read timeout, plans handled off the read loop; UniFFI dropped for v1 (D018) — held at ACTIVE until the Phase-0 gate (T007) passes on hardware (review round 2) — implemented, NOT executed on a device"
     },
     {
       "id": "T023",
@@ -160,7 +160,7 @@
       "blocked_by": [
         "T020"
       ],
-      "evidence": "host mode args mirror supervisor.rs (ngl+1, head pinned, --reasoning off); resumable model fetch; untested on hardware"
+      "evidence": "host mode: split rule = derive_args (ngl+1, head pinned, layer-count split, Locale.ROOT), --reasoning off, resumable fetch (206), ensureActive before start, failures reported to meshd — implemented, NOT executed on a device"
     },
     {
       "id": "T030",
@@ -220,7 +220,7 @@
       "blocked_by": [
         "T031"
       ],
-      "evidence": "round 2 FAIL: N1 heartbeat (fixed, D022), laptop worker bind (D020), mirror stripping + test, tier gate, phone-host split rule, resumable file serving, cancellable phone plan jobs, greedy planner + tests, .so files untracked for real; round 3 pending"
+      "evidence": "rounds 1–3 acted on; round 3 asked for: laptop-side heartbeat proof (now a tokio test in control.rs), atomic generation checks (proc_lock), phone plan actor, planner device growth, phone-host guard + failure reports, Locale.ROOT, mirror name stripping, runs.jsonl untracked; round 4 pending"
     }
   ]
 }

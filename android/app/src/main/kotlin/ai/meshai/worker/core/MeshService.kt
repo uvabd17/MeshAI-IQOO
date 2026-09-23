@@ -16,8 +16,12 @@ import android.net.wifi.WifiManager
 import android.os.IBinder
 import android.os.PowerManager
 import ai.meshai.proto.Tier
+import ai.meshai.proto.jobResult
+import com.google.protobuf.kotlin.toByteString
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -37,14 +41,19 @@ class MeshService : Service() {
     private lateinit var client: ControlClient
     private var wake: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
-    /** The plan currently being applied (model fetch + process start); cancelled by a stop plan or link loss (N4). */
+    /** Plans are applied strictly in order by one actor; the current job is cancelled and joined before the next (N4). */
+    private val plans = Channel<Plan>(Channel.UNLIMITED)
     private var planJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
         profiler = Profiler(this)
         runner = LlamaRunner(this)
-        client = ControlClient(this, scope, profiler, ::applyPlan, ::onLinkLost)
+        client = ControlClient(this, scope, profiler, { plans.send(it) }, ::onLinkLost)
+        runner.onExit = { role, code -> if (code != 0 && (role == "worker" || role == "host")) report(role, false, "$role process exited ($code)") }
+        // Actor: one plan at a time, in arrival order. A newer plan (or a stop) cancels and joins the running one
+        // before it starts, so a stop can never be queued behind a long model download.
+        scope.launch { for (plan in plans) { planJob?.cancel(); planJob?.join(); planJob = scope.launch { applyPlan(plan) } } }
         MeshState.set { it.copy(threads = profiler.workerThreads(), cpusAllowed = profiler.cpusAllowed(), tier = profiler.tier().name.removePrefix("TIER_")) }
         if (!runner.available) MeshState.log("⚠ llama.cpp binaries missing from this build (jniLibs)")
     }
@@ -61,16 +70,19 @@ class MeshService : Service() {
         return START_STICKY
     }
 
+    /** Tell the coordinator about a failed process or a refused plan (round-3 #2/L2). */
+    private fun report(job: String, ok: Boolean, note: String) =
+        client.notify(envelope { jobResult = jobResult { jobId = job; this.ok = ok; output = note.toByteArray().toByteString() } })
+
     private fun onLinkLost() {
         planJob?.cancel(); planJob = null
-        if (MeshState.ui.value.processRunning) { MeshState.log("link lost — stopping llama.cpp process"); runner.stop() }
+        MeshState.log("link lost — stopping llama.cpp process"); runner.stop()
         MeshState.set { it.copy(role = "idle") }
         updateNotification("Reconnecting…")
     }
 
     private suspend fun applyPlan(plan: Plan) {
         MeshState.currentPlan = plan
-        planJob?.cancel()
         val me = plan.placementsList.firstOrNull { it.deviceId == profiler.deviceId }
         if (plan.planId == "stop" || me == null || !me.used) {
             runner.stop()
@@ -81,12 +93,12 @@ class MeshService : Service() {
         if (profiler.tier() == Tier.TIER_UNSUPPORTED) {
             MeshState.log("✗ refusing plan: this phone is below the floor (arm64 + dotprod + i8mm, ≥ 8 GB)")
             MeshState.set { it.copy(lastError = "unsupported device", role = "idle") }
+            report("plan", false, "unsupported device (needs arm64 + dotprod + i8mm, ≥ 8 GB)")
             return
         }
         val threads = if (plan.nThreads > 0) plan.nThreads else profiler.workerThreads()
         val bind = client.linkLocalAddress ?: "127.0.0.1"
-        val job = scope.launch { applyPlanInner(plan, me, threads, bind) }
-        planJob = job
+        applyPlanInner(plan, me, threads, bind)
     }
 
     private suspend fun applyPlanInner(plan: Plan, me: ai.meshai.proto.Placement, threads: Int, bind: String) {
@@ -97,14 +109,17 @@ class MeshService : Service() {
             try {
                 val coord = plan.coordinator.ifEmpty { MeshState.ui.value.coordinator.substringBefore(':') + ":8080" }
                 val file = runner.ensureModel("http://$coord", plan.modelFile)
+                kotlinx.coroutines.currentCoroutineContext().ensureActive() // a stop/link loss during the download must not start the host
                 val workers = plan.placementsList.filter { it.used && !it.isHost }
                 runner.startHost(bind, file, plan.nCtx, threads, workers.map { it.addr to it.rpcPort }, workers.map { it.layerEnd - it.layerStart })
-            } catch (e: Exception) { MeshState.log("✗ host: ${e.message}"); MeshState.set { it.copy(lastError = e.message) } }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) { MeshState.log("✗ host: ${e.message}"); MeshState.set { it.copy(lastError = e.message) }; report("host", false, e.message ?: "host start failed") }
         } else {
             MeshState.set { it.copy(role = "worker") }
             updateNotification("Worker: layers ${me.layerStart}–${me.layerEnd - 1}")
             val port = me.rpcPort.takeIf { it > 0 } ?: 50052
-            if (runner.startWorker(bind, port, threads)) scope.launch { reportListening(bind, port, plan.planId) }
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (runner.startWorker(bind, port, threads)) scope.launch { reportListening(bind, port, plan.planId) } else report("worker", false, "could not start the RPC worker")
         }
     }
 

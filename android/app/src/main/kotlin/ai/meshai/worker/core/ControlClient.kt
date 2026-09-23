@@ -20,7 +20,7 @@ import java.net.Socket
 
 /**
  * One long-lived TCP stream to meshd: Hello(token | secret) → Profile → Telemetry every 2 s;
- * receives Paired / Plan / Heartbeat / Bye. Read timeout 30 s (heartbeats come every 10 s), so a
+ * receives Paired / Plan / Heartbeat / Bye. Read timeout 45 s (heartbeats come every 10 s), so a
  * dead link is noticed and the worker is torn down (H2/M8). Plans are handled off the read loop
  * so a stop can arrive while a model is downloading (M7).
  */
@@ -88,7 +88,7 @@ class ControlClient(
                             while (isActive) {
                                 profiler.sampleRtt(p.host, p.controlPort)
                                 val t = profiler.telemetry(if (decodeTps > 0f) decodeTps else MeshState.ui.value.decodeTps, trimLevel)
-                                MeshState.set { it.copy(availBytes = t.availBytes, thermalHeadroom = t.thermalHeadroom, thermalStatus = t.thermalStatus, batteryPct = t.batteryPct.toInt(), charging = t.charging, rttP50 = t.rttMsP50, rttP95 = t.rttMsP95, cpusAllowed = t.cpusAllowed, totalBytes = profiler.memInfo().totalMem, decodeTps = decodeTps) }
+                                MeshState.set { it.copy(availBytes = t.availBytes, thermalHeadroom = t.thermalHeadroom, thermalStatus = t.thermalStatus, batteryPct = t.batteryPct.toInt(), charging = t.charging, rttP50 = t.rttMsP50, rttP95 = t.rttMsP95, cpusAllowed = t.cpusAllowed, totalBytes = profiler.memInfo().totalMem, decodeTps = maxOf(it.decodeTps, decodeTps)) }
                                 runCatching { send(envelope { telemetry = t }) }
                                 delay(2000)
                             }
@@ -97,7 +97,7 @@ class ControlClient(
                             while (isActive) {
                                 val env = Framing.read(din)
                                 when {
-                                    env.hasPlan() -> { val plan = env.plan; scope.launch(Dispatchers.Default) { onPlan(plan) } }
+                                    env.hasPlan() -> onPlan(env.plan) // hands off to the service's serial plan channel
                                     env.hasHeartbeat() -> {}
                                     env.hasPaired() -> saveSecret(p.meshId, env.paired.deviceSecret.toByteArray())
                                     env.hasBye() -> { MeshState.log("bye: ${env.bye.reason}"); break }
