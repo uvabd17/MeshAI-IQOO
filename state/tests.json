@@ -61,8 +61,8 @@
       "cmd": "scripts/verify (full) or gradle -p android lint assembleDebug",
       "covers": "T020 NewApi and manifest rules",
       "last_run": "2026-09-24",
-      "status": "FAIL",
-      "evidence": "3 NewApi errors (Build.SOC_MODEL API 31) — fixed in Profiler.kt; rebuild running"
+      "status": "PASS",
+      "evidence": "gradle lint + assembleDebug clean after Profiler API-31 guard (2026-09-24)"
     }
   ]
 }
