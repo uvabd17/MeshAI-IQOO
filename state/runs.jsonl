@@ -1,1 +1,2 @@
 {"ts_ms":1790192706528,"model":"Qwen3-0.6B-Q8_0.gguf","mode":"LayerSplit","host":"local","devices":3,"ttft_ms":652,"total_ms":59260,"tokens_out":0,"prompt_tokens":0,"tps":0.0,"prompt_tps":24.56427,"ok":true}
+{"ts_ms":1790192759649,"model":"Qwen3-0.6B-Q8_0.gguf","mode":"LayerSplit","host":"local","devices":3,"ttft_ms":1977,"total_ms":53074,"tokens_out":0,"prompt_tokens":0,"tps":0.0,"prompt_tps":8.681879,"ok":true}

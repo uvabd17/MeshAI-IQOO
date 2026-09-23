@@ -116,7 +116,8 @@ async fn main() -> anyhow::Result<()> {
             );
         }
         Cmd::Worker { port, threads } => {
-            let child = supervisor::spawn_rpc_server(&cli.llama_bin, "0.0.0.0", port, threads, true)?;
+            let child =
+                supervisor::spawn_rpc_server(&cli.llama_bin, "0.0.0.0", port, threads, true)?;
             tracing::info!(
                 "worker: ggml-rpc-server listening on :{port} (pid {})",
                 child.id().unwrap_or(0)
