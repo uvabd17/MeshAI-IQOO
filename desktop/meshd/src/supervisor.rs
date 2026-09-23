@@ -161,6 +161,14 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
         *st.local_worker.lock().unwrap() = Some(child);
     }
     // Push the plan to every remote participant (phones start rpc-server / llama-server themselves)
+    {
+        let mut d = st.devices.write().unwrap();
+        for dev in d.values_mut() {
+            if !dev.is_local && dev.kind != crate::state::DeviceKind::Sim {
+                dev.worker_ready = false;
+            }
+        }
+    }
     let pplan = to_proto(&st, &plan);
     for p in plan
         .placements
@@ -172,6 +180,49 @@ pub async fn start(st: Arc<AppState>, plan: Plan) -> anyhow::Result<()> {
 
     // llama.cpp aborts the whole process if an RPC server is unreachable, so wait for every worker first.
     tracing::info!("start: waiting for {} worker(s)", la.workers.len());
+    // Remote phones report "worker listening" over the control plane first: a bare TCP probe is not
+    // enough because adb/port forwards accept connections before anything listens behind them.
+    let remote_ids: Vec<String> = plan
+        .placements
+        .iter()
+        .filter(|p| p.role == Role::Worker && p.device_id != "local")
+        .filter(|p| {
+            st.devices
+                .read()
+                .unwrap()
+                .get(&p.device_id)
+                .map(|d| d.kind != crate::state::DeviceKind::Sim)
+                .unwrap_or(false)
+        })
+        .map(|p| p.device_id.clone())
+        .collect();
+    for id in &remote_ids {
+        let mut ok = false;
+        for _ in 0..90 {
+            if st
+                .devices
+                .read()
+                .unwrap()
+                .get(id)
+                .map(|d| d.worker_ready)
+                .unwrap_or(false)
+            {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        if ok {
+            st.push_log(format!("worker ready on device {id}"));
+        } else {
+            let msg = format!("device {id} never reported its RPC worker listening (45 s) — is the app in the foreground?");
+            st.push_log(msg.clone());
+            let mut r = st.run.write().unwrap();
+            r.status = "error".into();
+            r.error = Some(msg.clone());
+            anyhow::bail!(msg);
+        }
+    }
     for (addr, port) in &la.workers {
         let target = format!("{addr}:{port}");
         let mut ok = false;

@@ -21,6 +21,7 @@ pub async fn serve(st: Arc<AppState>, port: u16) -> anyhow::Result<()> {
         .route("/admin/", get(admin_index))
         .route("/admin/{*path}", get(admin_static))
         .route("/api/state", get(api_state))
+        .route("/api/relay/state", post(api_relay_state))
         .route("/api/catalog", get(api_catalog))
         .route("/api/models/rescan", post(api_rescan))
         .route("/api/models/download", post(api_download))
@@ -88,7 +89,7 @@ async fn admin_static(Path(path): Path<String>) -> Response {
     }
 }
 
-async fn api_state(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
+fn state_json(st: &AppState) -> serde_json::Value {
     let devices: Vec<Device> = st.devices.read().unwrap().values().cloned().collect();
     let dev_json: Vec<serde_json::Value> = devices
         .iter()
@@ -99,7 +100,7 @@ async fn api_state(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
         })
         .collect();
     let offer = st.offer.read().unwrap().clone();
-    Json(serde_json::json!({
+    serde_json::json!({
         "mesh_id": st.mesh_id(),
         "devices": dev_json,
         "models": *st.models.read().unwrap(),
@@ -110,7 +111,69 @@ async fn api_state(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "policy": *st.policy.read().unwrap(),
         "models_dir": st.models_dir,
         "now_ms": crate::state::now_ms(),
-    }))
+        "mirrored": false,
+    })
+}
+
+async fn api_state(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    if st.mirror_token.read().unwrap().is_some() {
+        let snap = st.mirror.read().unwrap().clone();
+        return Json(match snap {
+            Some((s, _)) => s,
+            None => {
+                serde_json::json!({"mesh_id": "mirror", "devices": [], "models": [], "plan": null, "run": {"status": "idle", "log_tail": ["mirror: no coordinator has pushed state yet"]}, "downloads": [], "mirrored": true, "now_ms": crate::state::now_ms()})
+            }
+        });
+    }
+    Json(state_json(&st))
+}
+
+/// Coordinator → mirror push. Body: {"state": <state json>, "runs": [...]}. Bearer token required.
+async fn api_relay_state(
+    State(st): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let want = st.mirror_token.read().unwrap().clone();
+    let Some(want) = want else {
+        return (StatusCode::NOT_FOUND, "not a mirror").into_response();
+    };
+    let got = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    if got != want {
+        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    }
+    let mut s = body["state"].clone();
+    s["mirrored"] = serde_json::json!(true);
+    s["mirror_received_ms"] = serde_json::json!(crate::state::now_ms());
+    *st.mirror.write().unwrap() = Some((s, body["runs"].clone()));
+    Json(serde_json::json!({"ok": true})).into_response()
+}
+
+/// Coordinator side: push state + runs to the mirror every 2 s.
+pub async fn push_loop(st: Arc<AppState>) {
+    let client = reqwest::Client::new();
+    loop {
+        let cfg = st.push_to.read().unwrap().clone();
+        if let Some((base, token)) = cfg {
+            let state = state_json(&st);
+            let runs = serde_json::json!(*st.runs.read().unwrap());
+            let r = client
+                .post(format!("{base}/api/relay/state"))
+                .bearer_auth(&token)
+                .json(&serde_json::json!({"state": state, "runs": runs}))
+                .timeout(std::time::Duration::from_secs(5))
+                .send()
+                .await;
+            if let Err(e) = r {
+                tracing::warn!("mirror push failed: {e}");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
 }
 
 async fn api_catalog() -> Json<Vec<models::CatalogEntry>> {
@@ -321,6 +384,16 @@ async fn api_sim_workers(State(st): State<Arc<AppState>>, Json(r): Json<SimReq>)
 }
 
 async fn api_runs(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    if st.mirror_token.read().unwrap().is_some() {
+        return Json(
+            st.mirror
+                .read()
+                .unwrap()
+                .as_ref()
+                .map(|(_, r)| r.clone())
+                .unwrap_or(serde_json::json!([])),
+        );
+    }
     Json(serde_json::json!(*st.runs.read().unwrap()))
 }
 

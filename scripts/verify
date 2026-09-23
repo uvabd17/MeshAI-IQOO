@@ -54,10 +54,10 @@ if [[ -f desktop/Cargo.toml ]]; then
   else bad "desktop/Cargo.toml exists but cargo not installed"; fi
 fi
 
-# android
+# android (full mode only: a Gradle run takes minutes and must not sit inside the Stop hook)
 if [[ -f android/gradlew ]]; then
-  if [[ $QUICK == 1 ]]; then (cd android && ./gradlew -q testDebugUnitTest >/dev/null 2>&1) && ok "gradle unit tests" || bad "gradle unit tests"
-  else (cd android && ./gradlew -q lint testDebugUnitTest assembleDebug >/dev/null 2>&1) && ok "gradle lint+test+assembleDebug" || bad "gradle lint+test+assembleDebug"; fi
+  if [[ $QUICK == 1 ]]; then skip "gradle (quick mode; run scripts/verify for lint+test+assembleDebug)"
+  else GR="${GRADLE_BIN:-./gradlew}"; (cd android && ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}" "$GR" -q --no-daemon lint testDebugUnitTest assembleDebug >/dev/null 2>&1) && ok "gradle lint+test+assembleDebug" || bad "gradle lint+test+assembleDebug"; fi
 fi
 
 # admin web

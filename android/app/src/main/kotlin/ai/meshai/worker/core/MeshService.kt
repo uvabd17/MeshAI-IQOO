@@ -1,6 +1,10 @@
 package ai.meshai.worker.core
 
 import ai.meshai.proto.Plan
+import ai.meshai.proto.envelope
+import ai.meshai.proto.jobProgress
+import java.net.InetSocketAddress
+import java.net.Socket
 import ai.meshai.worker.MainActivity
 import ai.meshai.worker.MeshApp
 import ai.meshai.worker.R
@@ -76,8 +80,23 @@ class MeshService : Service() {
         } else {
             MeshState.set { it.copy(role = "worker") }
             updateNotification("Worker: layers ${me.layerStart}–${me.layerEnd - 1}")
-            runner.startWorker(me.rpcPort.takeIf { it > 0 } ?: 50052, threads)
+            val port = me.rpcPort.takeIf { it > 0 } ?: 50052
+            if (runner.startWorker(port, threads)) scope.launch { reportListening(port) }
         }
+    }
+
+    /** Poll our own RPC port until it accepts, then tell the coordinator; it launches the host only after this. */
+    private suspend fun reportListening(port: Int) {
+        repeat(60) {
+            val ok = runCatching { Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 500) }; true }.getOrDefault(false)
+            if (ok) {
+                client.notify(envelope { jobProgress = jobProgress { jobId = "worker"; fraction = 1f; note = "listening:$port" } })
+                MeshState.log("worker listening on :$port")
+                return
+            }
+            kotlinx.coroutines.delay(500)
+        }
+        MeshState.log("✗ worker did not start listening on :$port")
     }
 
     private fun acquireLocks() {

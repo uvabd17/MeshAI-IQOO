@@ -47,6 +47,18 @@ enum Cmd {
         api_port: u16,
         #[arg(long, default_value_t = meshcore::CONTROL_PORT)]
         control_port: u16,
+        /// Mirror this coordinator's live state to a cloud `meshd mirror` (e.g. https://mesh.example.com)
+        #[arg(long, env = "MESHAI_PUSH_TO")]
+        push_to: Option<String>,
+        #[arg(long, env = "MESHAI_PUSH_TOKEN")]
+        push_token: Option<String>,
+    },
+    /// Serve the admin panel read-only from state pushed by a coordinator (the internet-facing deployment).
+    Mirror {
+        #[arg(long, default_value_t = meshcore::API_PORT)]
+        api_port: u16,
+        #[arg(long, env = "MESHAI_MIRROR_TOKEN")]
+        token: String,
     },
     Pair,
     Plan {
@@ -83,13 +95,26 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Serve {
             api_port,
             control_port,
+            push_to,
+            push_token,
         } => {
             st.refresh_local_profile();
             st.scan_models();
+            if let (Some(u), Some(t)) = (push_to, push_token) {
+                *st.push_to.write().unwrap() = Some((u.trim_end_matches('/').to_string(), t));
+                tokio::spawn(api::push_loop(st.clone()));
+            }
             let c = control::serve(st.clone(), control_port);
             let a = api::serve(st.clone(), api_port);
             tracing::info!("admin: http://127.0.0.1:{api_port}/admin  · OpenAI API: http://127.0.0.1:{api_port}/v1  · control: :{control_port}");
             tokio::try_join!(c, a)?;
+        }
+        Cmd::Mirror { api_port, token } => {
+            *st.mirror_token.write().unwrap() = Some(token);
+            tracing::info!(
+                "mirror mode: admin at :{api_port}/admin, waiting for a coordinator to push state"
+            );
+            api::serve(st.clone(), api_port).await?;
         }
         Cmd::Pair => {
             let offer = st.new_offer(meshcore::CONTROL_PORT);

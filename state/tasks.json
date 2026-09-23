@@ -124,11 +124,11 @@
       "id": "T020",
       "title": "Android app skeleton: Compose dashboard, connectedDevice FGS, wake+wifi locks, profiler (RAM/thermal/battery/cpuset)",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T007"
       ],
-      "evidence": "android/: Compose dashboard, connectedDevice FGS, wake+wifi locks, profiler (RAM/thermal/battery/cpuset/RTT); first gradle build running"
+      "evidence": "APK builds (80 MB, arm64+x86_64); Compose dashboard verified on emulator screenshot; FGS connectedDevice runs; profiler reports RAM/thermal/battery/cpuset/RTT to meshd"
     },
     {
       "id": "T021",
@@ -138,18 +138,18 @@
       "blocked_by": [
         "T020"
       ],
-      "evidence": "D010: llama.cpp binaries shipped as jniLibs lib*.so and spawned as child processes (worker + host modes)"
+      "evidence": "emulator joined, Plan pushed, app spawned libmeshai_rpc.so worker; host crashed because x86_64 build used AVX2 (emulator has AVX only) — rebuilding without AVX2; arm64 path untested (no phone on USB)"
     },
     {
       "id": "T022",
       "title": "Android: QR pairing + meshcore.so via cargo-ndk/UniFFI; Telemetry stream to meshd",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T021",
         "T010"
       ],
-      "evidence": "QR join (zxing) + paste; ControlClient with Hello/Profile/Telemetry/Plan over framed protobuf-lite"
+      "evidence": "control client: Hello/Profile/Telemetry every 2 s over framed protobuf-lite; join via QR/paste/intent extra; reconnect with backoff"
     },
     {
       "id": "T023",

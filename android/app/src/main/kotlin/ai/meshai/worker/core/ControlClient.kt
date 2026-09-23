@@ -84,6 +84,9 @@ class ControlClient(
         }
     }
 
+    /** Fire-and-forget notification to the coordinator (e.g. worker listening). */
+    fun notify(env: Envelope) = runCatching { send(env) }
+
     @Synchronized private fun send(env: Envelope) {
         val o = out ?: return
         Framing.write(o, env.toBuilder().setSeq(++seq).build())
