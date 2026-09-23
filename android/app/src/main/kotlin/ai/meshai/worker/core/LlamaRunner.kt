@@ -20,7 +20,9 @@ class LlamaRunner(private val ctx: Context) {
     private var proc: Process? = null
     /** Which run the current process belongs to, so an exit callback for an old process never masks a new one. */
     private var procGen = 0
-    var onExit: ((role: String, code: Int) -> Unit)? = null
+    /** (role, planId the process was started for, exit code) — only for the process we still own. */
+    var onExit: ((role: String, planId: String, code: Int) -> Unit)? = null
+    enum class Start { STARTED, REFUSED, FAILED }
     /** "host", "worker" or "" — the role of the process we currently own. */
     @Volatile var currentRole = ""
         private set
@@ -29,7 +31,9 @@ class LlamaRunner(private val ctx: Context) {
      * that races a stop from another thread is refused instead of resurrecting a process nobody owns (round-4 #3).
      */
     private var armed = false
-    fun arm() = synchronized(lock) { armed = true }
+    private var stillValid: () -> Boolean = { true }
+    /** Arm for one plan; [valid] is re-checked under the lock at start time (link generation, round-5 #3). */
+    fun arm(valid: () -> Boolean) = synchronized(lock) { armed = true; stillValid = valid }
     // Finite read timeout: a stalled model stream must not block the cancellable loop forever.
     private val http = OkHttpClient.Builder().readTimeout(60, TimeUnit.SECONDS).build()
     val modelsDir: File = File(ctx.getExternalFilesDir(null), "models").apply { mkdirs() }
@@ -37,19 +41,19 @@ class LlamaRunner(private val ctx: Context) {
     val available: Boolean get() = File(libDir, "libmeshai_rpc.so").exists()
 
     /** Worker: bind only to the address of the paired link (H2), never 0.0.0.0. */
-    fun startWorker(bindHost: String, port: Int, threads: Int): Boolean =
-        start("worker", listOf(File(libDir, "libmeshai_rpc.so").path, "-H", bindHost, "-p", "$port", "-t", "$threads", "-c"))
+    fun startWorker(bindHost: String, port: Int, threads: Int, planId: String): Start =
+        start("worker", planId, listOf(File(libDir, "libmeshai_rpc.so").path, "-H", bindHost, "-p", "$port", "-t", "$threads", "-c"))
 
     /**
      * Same rule as desktop/meshd/src/supervisor.rs `derive_args`: llama.cpp counts the output head as a
      * layer, so offload ngl+1, pin the head to CPU, and split the (ngl+1) offloaded entries by worker
      * layer counts with the extra head slot on the last worker.
      */
-    fun startHost(bindHost: String, model: File, nCtx: Int, threads: Int, workers: List<Pair<String, Int>>, workerLayers: List<Int>): Boolean =
-        start("host", hostArgs(File(libDir, "libmeshai_server.so").path, model.path, nCtx, threads, bindHost, workers, workerLayers))
+    fun startHost(bindHost: String, model: File, nCtx: Int, threads: Int, workers: List<Pair<String, Int>>, workerLayers: List<Int>, planId: String): Start =
+        start("host", planId, hostArgs(File(libDir, "libmeshai_server.so").path, model.path, nCtx, threads, bindHost, workers, workerLayers))
 
-    private fun start(newRole: String, cmd: List<String>): Boolean = synchronized(lock) {
-        if (!armed) { MeshState.log("✗ $newRole start refused: stopped before it could begin"); return@synchronized false }
+    private fun start(newRole: String, planId: String, cmd: List<String>): Start = synchronized(lock) {
+        if (!armed || !stillValid()) { MeshState.log("✗ $newRole start refused: stopped (or link lost) before it could begin"); return@synchronized Start.REFUSED }
         stopLocked(); armed = true // stopLocked disarms; this start is the plan's own
         runCatching {
             val pb = ProcessBuilder(cmd).redirectErrorStream(true)
@@ -66,10 +70,10 @@ class LlamaRunner(private val ctx: Context) {
                 val code = runCatching { p.waitFor() }.getOrDefault(-1)
                 MeshState.log("■ $newRole process exited ($code)")
                 val stillCurrent = synchronized(lock) { procGen == myGen }
-                if (stillCurrent) { MeshState.set { it.copy(processRunning = false) }; onExit?.invoke(newRole, code) }
+                if (stillCurrent) { MeshState.set { it.copy(processRunning = false) }; onExit?.invoke(newRole, planId, code) }
             }.start()
-            true
-        }.onFailure { MeshState.log("✗ start failed: ${it.message}"); MeshState.set { s -> s.copy(lastError = it.message) } }.getOrDefault(false)
+            Start.STARTED
+        }.onFailure { MeshState.log("✗ start failed: ${it.message}"); MeshState.set { s -> s.copy(lastError = it.message) } }.getOrDefault(Start.FAILED)
     }
 
     fun stop() = synchronized(lock) { stopLocked() }

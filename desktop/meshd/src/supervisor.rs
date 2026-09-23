@@ -267,7 +267,7 @@ pub async fn fail_run_from_device(st: &Arc<AppState>, device_id: &str, plan_id: 
         .read()
         .unwrap()
         .get(device_id)
-        .map(|d| d.has_plan)
+        .map(|d| d.in_run())
         .unwrap_or(false);
     // A report is only honoured for the plan it belongs to: a stale "download cancelled" from the
     // run we just superseded must never kill the new one (round-4 #1).
@@ -290,7 +290,7 @@ pub async fn forget_device(st: &Arc<AppState>, id: &str) {
         .read()
         .unwrap()
         .get(id)
-        .map(|d| d.has_plan || d.role == "host" || d.role == "worker")
+        .map(|d| d.in_run())
         .unwrap_or(false);
     if in_run {
         st.push_log(format!("device {id} forgotten during the run — stopping"));
@@ -299,10 +299,11 @@ pub async fn forget_device(st: &Arc<AppState>, id: &str) {
         r.status = "error".into();
         r.error = Some(format!("device {id} was forgotten"));
     }
-    let _ = st.session_ctl.send((id.to_string(), 0));
-    st.devices.write().unwrap().remove(id);
+    // Pairing first, so a concurrent Hello can no longer verify; then the table; then Bye (round-5 #4).
     st.pairing.lock().unwrap().forget(id);
     st.save_paired();
+    st.devices.write().unwrap().remove(id);
+    let _ = st.session_ctl.send((id.to_string(), 0));
 }
 
 async fn bring_up(

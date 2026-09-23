@@ -18,7 +18,10 @@ use tokio::net::{TcpListener, TcpStream};
 pub const SILENCE_LIMIT_MS: u64 = 45_000;
 pub const HEARTBEAT_SECS: u64 = 10;
 /// Pre-auth connections are cheap to open; cap them so a LAN scanner cannot exhaust memory.
+/// Unauthenticated sockets have their own, smaller pool so they can never crowd out a paired
+/// phone (round-5 #5).
 const MAX_CONNECTIONS: usize = 64;
+const MAX_PREAUTH: usize = 16;
 /// Before Hello a frame may be at most this big and Hello must arrive within this deadline, so 64
 /// unauthenticated sockets can hold at most 64 × 4 KiB, not 64 × 16 MiB (round-4 #9).
 const PREAUTH_MAX_FRAME: usize = 4096;
@@ -32,17 +35,22 @@ pub async fn serve(st: Arc<AppState>, port: u16) -> anyhow::Result<()> {
 
 pub async fn serve_on(st: Arc<AppState>, l: TcpListener) -> anyhow::Result<()> {
     let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let preauth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     loop {
         let (sock, peer) = l.accept().await?;
-        if live.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
+        if live.load(Ordering::SeqCst) >= MAX_CONNECTIONS
+            || preauth.load(Ordering::SeqCst) >= MAX_PREAUTH
+        {
             tracing::warn!("control: too many connections, dropping {peer}");
             continue;
         }
         let st = st.clone();
         let live = live.clone();
+        let preauth = preauth.clone();
         live.fetch_add(1, Ordering::SeqCst);
+        preauth.fetch_add(1, Ordering::SeqCst);
         tokio::spawn(async move {
-            handle(st, sock, peer.ip().to_string()).await;
+            handle(st, sock, peer.ip().to_string(), preauth).await;
             live.fetch_sub(1, Ordering::SeqCst);
         });
     }
@@ -61,19 +69,36 @@ struct Session {
     link_local: Option<String>,
     device_id: Option<String>,
     seq: u64,
+    /// Pre-auth pool counter; released once Hello succeeds or when the socket closes unpaired.
+    preauth: Option<Arc<std::sync::atomic::AtomicUsize>>,
+}
+
+impl Session {
+    fn authenticated(&mut self) {
+        if let Some(p) = self.preauth.take() {
+            p.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
 }
 
 /// Runs one connection; always performs the offline cleanup afterwards.
-async fn handle(st: Arc<AppState>, sock: TcpStream, ip: String) {
+async fn handle(
+    st: Arc<AppState>,
+    sock: TcpStream,
+    ip: String,
+    preauth: Arc<std::sync::atomic::AtomicUsize>,
+) {
     let mut s = Session {
         my_conn: st.conn_seq.fetch_add(1, Ordering::SeqCst) + 1,
         link_local: sock.local_addr().map(|a| a.ip().to_string()).ok(),
         device_id: None,
         seq: 0,
+        preauth: Some(preauth),
     };
     if let Err(e) = session(&st, sock, &ip, &mut s).await {
         tracing::info!("control {ip} [conn {}]: {e}", s.my_conn);
     }
+    s.authenticated(); // release the pre-auth slot if Hello never succeeded
     cleanup(&st, &s).await;
 }
 
@@ -140,11 +165,18 @@ async fn session(
                                 // A plan pushed while this device was between connections (L6).
                                 let current = st.run.read().unwrap().plan_id.clone();
                                 match (&e.last_plan, current) {
-                                    (Some(p), Some(cur)) if p.plan_id == cur => { e.has_plan = true; Some(p.clone()) }
+                                    (Some(p), Some(cur)) if p.plan_id == cur => {
+                                        // Restore membership fully: has_plan *and* role (round-5 #2).
+                                        e.has_plan = true;
+                                        let mine = p.placements.iter().find(|pl| pl.device_id == h.device_id);
+                                        e.role = match mine { Some(pl) if pl.is_host => "host", _ => "worker" }.into();
+                                        Some(p.clone())
+                                    }
                                     _ => None,
                                 }
                             }; // guard dropped before the awaits below
                             s.device_id = Some(h.device_id.clone());
+                            s.authenticated();
                             let _ = st.session_ctl.send((h.device_id.clone(), s.my_conn));
                             tracing::info!("{}: {} ({}) from {ip} via {} [conn {}]", if issued.is_some() { "paired" } else { "reconnected" }, h.display_name, h.device_id, s.link_local.as_deref().unwrap_or("?"), s.my_conn);
                             if let Some(secret) = issued {
@@ -267,7 +299,7 @@ async fn cleanup(st: &Arc<AppState>, s: &Session) {
         match d.get_mut(id) {
             Some(dev) if dev.conn_id == s.my_conn => {
                 dev.online = false;
-                let active = dev.role == "host" || dev.role == "worker";
+                let active = dev.in_run();
                 let pid = dev.last_plan.as_ref().map(|p| p.plan_id.clone());
                 dev.role = "idle".into();
                 dev.worker_ready_plan = None;
@@ -408,8 +440,120 @@ mod tests {
         dev.role = role.into();
         dev.last_plan = Some(Plan {
             plan_id: plan_id.into(),
+            placements: vec![meshcore::proto::Placement {
+                device_id: id.into(),
+                is_host: role == "host",
+                used: true,
+                ..Default::default()
+            }],
             ..Default::default()
         });
+    }
+
+    async fn wait_status(st: &AppState, want: &str) -> bool {
+        for _ in 0..50 {
+            if run_status(st) == want {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        false
+    }
+
+    async fn wait_offline(st: &AppState, id: &str) -> bool {
+        for _ in 0..50 {
+            if !st
+                .devices
+                .read()
+                .unwrap()
+                .get(id)
+                .map(|d| d.online)
+                .unwrap_or(true)
+            {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn reconnect_resend_then_drop_again_ends_the_run() {
+        // Round-5 #2: after a re-send the device must be a full member again (has_plan AND role),
+        // so its next disconnect ends the run.
+        let st = test_state();
+        let (port, sock, secret, _buf) = pair(&st, "p6").await;
+        drop(sock);
+        assert!(wait_offline(&st, "p6").await);
+        fake_run(&st, "p6", "plan-D", "worker");
+        {
+            // What the owning cleanup leaves behind when the socket dropped before the push.
+            let mut d = st.devices.write().unwrap();
+            let dev = d.get_mut("p6").unwrap();
+            dev.has_plan = false;
+            dev.role = "idle".into();
+        }
+        let (mut sock2, mut buf2) = reconnect(port, "p6", &secret).await;
+        let e = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            read_env(&mut sock2, &mut buf2),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(e.body, Some(Body::Plan(_))));
+        assert_eq!(st.devices.read().unwrap().get("p6").unwrap().role, "worker");
+        drop(sock2);
+        assert!(
+            wait_status(&st, "error").await,
+            "a member dropping must end the run"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_that_wins_while_cleanup_waits_keeps_the_run() {
+        // Round-4 #4: cleanup blocks on run_lock; the phone reconnects meanwhile; when cleanup
+        // resumes it must notice it no longer owns the device and leave the run alone.
+        let st = test_state();
+        let (port, sock, secret, _buf) = pair(&st, "p7").await;
+        fake_run(&st, "p7", "plan-E", "worker");
+        let held = st.run_lock.lock().await; // an api call is busy
+        drop(sock);
+        assert!(wait_offline(&st, "p7").await); // cleanup ran its first half, now waits on run_lock
+        let (_sock2, _buf2) = reconnect(port, "p7", &secret).await;
+        assert!(st.devices.read().unwrap().get("p7").unwrap().online);
+        drop(held);
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(
+            run_status(&st),
+            "ready",
+            "cleanup must not end a run the device rejoined"
+        );
+        assert!(st.devices.read().unwrap().get("p7").unwrap().has_plan);
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_member_ends_the_run() {
+        let st = test_state();
+        let (_port, mut sock, _secret, mut buf) = pair(&st, "p8").await;
+        fake_run(&st, "p8", "plan-F", "host");
+        crate::supervisor::forget_device(&st, "p8").await;
+        assert_eq!(run_status(&st), "error");
+        assert!(st
+            .run
+            .read()
+            .unwrap()
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("forgotten"));
+        let e = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            try_read_env(&mut sock, &mut buf),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(e.map(|e| e.body), Some(Some(Body::Bye(_)))));
+        assert!(!st.pairing.lock().unwrap().verify("p8", &_secret));
     }
 
     fn run_status(st: &AppState) -> String {
@@ -421,7 +565,7 @@ mod tests {
         let st = test_state();
         let (port, sock, secret, _buf) = pair(&st, "p1").await;
         drop(sock);
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(wait_offline(&st, "p1").await);
         // The run starts while the phone is between connections: the plan is recorded for it.
         fake_run(&st, "p1", "plan-A", "worker");
         st.devices.write().unwrap().get_mut("p1").unwrap().has_plan = false; // cleanup cleared it
@@ -499,7 +643,8 @@ mod tests {
         st.run.write().unwrap().status = "ready".into();
         st.run.write().unwrap().plan_id = Some("plan-C".into());
         drop(sock); // p3 is idle: not part of the run
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(wait_offline(&st, "p3").await);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert_eq!(run_status(&st), "ready");
         assert!(!st.devices.read().unwrap().get("p3").unwrap().online);
         let (sock2, _b) = reconnect(port, "p3", &secret).await;

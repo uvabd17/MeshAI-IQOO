@@ -405,11 +405,19 @@ async fn api_plan(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Re
     }
 }
 
-/// Stops the previous run, plans against the freed memory (M4), records the new plan and returns
-/// while bring-up continues in the background (N5). Initiation is serialised (M10).
+/// Cheap validation first (a refused request never touches the current run), then stop the
+/// previous run, plan against the freed memory (M4), record the new plan and return while
+/// bring-up continues in the background (N5). Initiation is serialised (M10).
 async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Response {
     let _g = st.run_lock.lock().await;
-    // Validate before touching the current run: a refused request must not stop it (round-4 #12).
+    if let Err(e) = st.precheck_run(&r.model, r.host.as_deref()) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response();
+    }
+    supervisor::stop(&st).await;
     st.refresh_local_profile();
     let plan = match st.make_plan(&r.model, r.n_ctx, r.host) {
         Ok(p) => p,
@@ -421,7 +429,7 @@ async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Res
                 .into_response()
         }
     };
-    // A phone host fetches the model from this API, so it needs --lan (round-3 #2).
+    // The planner may pick a phone host on its own (prefer_host None): the same rule applies (D024).
     let host_is_remote = st
         .devices
         .read()
@@ -436,7 +444,6 @@ async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Res
         )
             .into_response();
     }
-    supervisor::stop(&st).await;
     match supervisor::start(st.clone(), plan.clone()).await {
         Ok(()) => Json(serde_json::json!({"ok": true, "plan": plan})).into_response(),
         Err(e) => (
