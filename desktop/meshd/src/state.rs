@@ -34,6 +34,9 @@ pub struct Device {
     pub usable_override_bytes: Option<u64>,
     pub last_seen_ms: u64,
     pub bench_tps: f32,
+    /// Remote worker has reported its RPC port is accepting connections (cleared on every plan push).
+    #[serde(default)]
+    pub worker_ready: bool,
 }
 
 impl Device {
@@ -133,6 +136,10 @@ pub struct AppState {
     pub sim_children: Mutex<Vec<tokio::process::Child>>, // simulated phones: live across runs
     pub local_worker: Mutex<Option<tokio::process::Child>>, // laptop-as-worker for a phone host: per run
     pub plan_tx: tokio::sync::broadcast::Sender<(String, proto::Plan)>, // device_id -> plan to push
+    /// Mirror mode: the last state/runs snapshot pushed by a coordinator (cloud instance serves it read-only).
+    pub mirror: RwLock<Option<(serde_json::Value, serde_json::Value)>>,
+    pub mirror_token: RwLock<Option<String>>,
+    pub push_to: RwLock<Option<(String, String)>>, // (base url, token) when this coordinator mirrors itself to a cloud meshd
 }
 
 pub fn now_ms() -> u64 {
@@ -169,6 +176,9 @@ impl AppState {
             sim_children: Mutex::new(Vec::new()),
             local_worker: Mutex::new(None),
             plan_tx,
+            mirror: RwLock::new(None),
+            mirror_token: RwLock::new(None),
+            push_to: RwLock::new(None),
         };
         s.load_runs();
         s
@@ -241,6 +251,7 @@ impl AppState {
             usable_override_bytes: None,
             last_seen_ms: now_ms(),
             bench_tps: 0.0,
+            worker_ready: false,
         });
         e.profile = Some(profile);
         e.telemetry = Some(telemetry);
@@ -273,6 +284,7 @@ impl AppState {
                 usable_override_bytes: Some(usable),
                 last_seen_ms: now_ms(),
                 bench_tps: 0.0,
+                worker_ready: true, // sims are spawned by us and checked over TCP
             },
         );
     }

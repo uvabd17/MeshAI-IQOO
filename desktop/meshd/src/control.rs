@@ -50,6 +50,7 @@ async fn handle(st: Arc<AppState>, mut sock: TcpStream, ip: String) -> anyhow::R
                                     id: h.device_id.clone(), name: h.display_name.clone(), kind: DeviceKind::Phone, is_local: false, online: true,
                                     addr: Some(ip.clone()), rpc_port: if h.rpc_port == 0 { meshcore::RPC_PORT } else { h.rpc_port as u16 }, role: "idle".into(),
                                     profile: None, telemetry: None, usable_override_bytes: None, last_seen_ms: now_ms(), bench_tps: 0.0,
+                                    worker_ready: false,
                                 });
                                 e.online = true; e.addr = Some(ip.clone()); e.name = h.display_name.clone(); e.last_seen_ms = now_ms();
                                 if h.rpc_port != 0 { e.rpc_port = h.rpc_port as u16; }
@@ -79,7 +80,17 @@ async fn handle(st: Arc<AppState>, mut sock: TcpStream, ip: String) -> anyhow::R
                                 if let Some(d) = st.devices.write().unwrap().get_mut(id) { d.last_seen_ms = now_ms(); }
                             }
                         }
-                        Some(Body::JobProgress(_)) | Some(Body::JobResult(_)) | Some(Body::JobSubmit(_)) | Some(Body::Plan(_)) => {}
+                        Some(Body::JobProgress(jp)) => {
+                            if jp.job_id == "worker" {
+                                if let Some(id) = &device_id {
+                                    if let Some(d) = st.devices.write().unwrap().get_mut(id) {
+                                        d.worker_ready = true;
+                                    }
+                                    tracing::info!("worker ready: {id} ({})", jp.note);
+                                }
+                            }
+                        }
+                        Some(Body::JobResult(_)) | Some(Body::JobSubmit(_)) | Some(Body::Plan(_)) => {}
                         Some(Body::Bye(b)) => { tracing::info!("{ip} bye: {}", b.reason); break; }
                         None => {}
                     }
