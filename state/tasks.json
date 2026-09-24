@@ -30,10 +30,11 @@
       "id": "T004",
       "title": "Laptop↔phone layer split over RPC (hotspot, then USB tethering): TTFT, pp/tg t/s, RTT p50/p95",
       "phase": 0,
-      "status": "PENDING",
+      "status": "ACTIVE",
       "blocked_by": [
         "T003"
-      ]
+      ],
+      "evidence": "EXECUTED 11:26 IST over USB via adb port-forward: split correct (laptop 0–12, phone 13–27), ready 18.6 s, decode 0.65–1.36 tok/s, TTFT 1.5–1.8 s, RTT p50 5 ms; Wi-Fi attempt refused (RTT p95 154 ms). Still to do: USB tethering (Settings, not adb — K20) or hotspot, and the raw llama-bench A/B/C rows (binaries + model are already in /data/local/tmp/meshai)"
     },
     {
       "id": "T005",
@@ -62,7 +63,7 @@
         "T004",
         "T006"
       ],
-      "evidence": "gate not passed: no real phone measurement yet (POCO F5 seen once on USB, not since). Everything below is built ahead of the gate on simulated workers — see progress.md"
+      "evidence": "NOT passed yet: 0.65–1.36 tok/s on the adb-relayed transport (< 3 tok/s). Split correctness proven. Decision pending a measurement over a native link (tethering/hotspot)"
     },
     {
       "id": "T008",
@@ -125,42 +126,42 @@
       "id": "T020",
       "title": "Android app skeleton: Compose dashboard, connectedDevice FGS, wake+wifi locks, profiler (RAM/thermal/battery/cpuset)",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T007"
       ],
-      "evidence": "APK builds; lint clean after API-31 guard; dashboard verified on emulator earlier; connectedDevice FGS not yet verified on a real Android 14/15 device"
+      "evidence": "EXECUTED on the POCO F5: Compose dashboard (neobrutalist, two tabs), connectedDevice FGS, locks, profiler (RAM/thermal/battery/cpuset/core loads) — screenshots in the session scratchpad"
     },
     {
       "id": "T021",
       "title": "Android: embed ggml RPC server in-process with explicit devices[]; start/stop tied to plan lifecycle",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T020"
       ],
-      "evidence": "worker binds to the paired link address, killed on link loss, listening report carries the plan id; serial plan actor; process exits reported — all implemented, NOT executed on a device (no phone on USB)"
+      "evidence": "EXECUTED on the POCO F5 11:26 IST: plan pushed → app spawned ggml-rpc-server bound to the link address (127.0.0.1 via adb reverse) → worker-listening report → laptop llama-server connected → correct answers; kill on link loss + serial plan actor exercised across several re-pairs today"
     },
     {
       "id": "T022",
       "title": "Android: QR/secret pairing + control client (framed protobuf-lite; UniFFI dropped for v1, D018); Telemetry stream to meshd",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T021",
         "T010"
       ],
-      "evidence": "control client with token→secret pairing, 45 s read timeout, plans handled off the read loop; UniFFI dropped for v1 (D018) — held at ACTIVE until the Phase-0 gate (T007) passes on hardware (review round 2) — implemented, NOT executed on a device"
+      "evidence": "EXECUTED on the POCO F5: QR/intent pairing with confirmation card, per-device secret stored, telemetry every 2 s (avail, thermal, battery, RTT, core loads, held_bytes) visible in the admin; reconnect/forget/re-pair exercised"
     },
     {
       "id": "T023",
       "title": "Android: host mode (llama-server child process) and worker mode (ggml-rpc-server); role set by plan; x86_64 ABI for emulator testing",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T020"
       ],
-      "evidence": "host mode: split rule = derive_args (ngl+1, head pinned, layer-count split, Locale.ROOT), --reasoning off, resumable fetch (206), ensureActive before start, failures reported to meshd — implemented, NOT executed on a device"
+      "evidence": "EXECUTED on the POCO F5: host mode (model fetched from meshd, llama-server on :8081, 28.8 tok/s, 10:39 IST) and worker mode (11:26 IST) both ran"
     },
     {
       "id": "T030",

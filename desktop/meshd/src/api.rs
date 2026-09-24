@@ -35,6 +35,8 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/api/models/rescan", post(api_rescan))
         .route("/api/models/download", post(api_download))
         .route("/api/pair/offer", post(api_offer))
+        .route("/api/usb", get(api_usb))
+        .route("/api/usb/pair", post(api_usb_pair))
         .route("/api/plan", post(api_plan))
         .route("/api/run", post(api_run))
         .route("/api/stop", post(api_stop))
@@ -377,15 +379,167 @@ fn file_stream(
 struct OfferReq {
     host: Option<String>,
 }
-async fn api_offer(
-    State(st): State<Arc<AppState>>,
-    body: Option<Json<OfferReq>>,
-) -> Json<serde_json::Value> {
-    let host = body.and_then(|Json(r)| r.host);
+async fn api_offer(State(st): State<Arc<AppState>>, body: bytes::Bytes) -> Json<serde_json::Value> {
+    // The admin posts an empty body; a host override is optional JSON.
+    let host = serde_json::from_slice::<OfferReq>(&body)
+        .ok()
+        .and_then(|r| r.host);
     let o = st.new_offer_at(host, meshcore::CONTROL_PORT);
+    let links: Vec<serde_json::Value> = crate::state::local_links()
+        .into_iter()
+        .map(|(ip, kind)| serde_json::json!({"ip": ip, "kind": kind}))
+        .collect();
     Json(
-        serde_json::json!({"payload": o.qr_payload(), "svg": crate::state::qr_svg(&o.qr_payload()), "host": o.host, "port": o.control_port}),
+        serde_json::json!({"payload": o.qr_payload(), "svg": crate::state::qr_svg(&o.qr_payload()), "host": o.host, "port": o.control_port, "hosts": o.hosts, "links": links}),
     )
+}
+
+/// `adb` if it is on PATH or under ANDROID_HOME/ANDROID_SDK_ROOT (Linux, macOS, Windows).
+fn adb_path() -> Option<std::path::PathBuf> {
+    let exe = format!("adb{}", std::env::consts::EXE_SUFFIX);
+    for var in ["ANDROID_HOME", "ANDROID_SDK_ROOT"] {
+        if let Ok(root) = std::env::var(var) {
+            let p = std::path::Path::new(&root)
+                .join("platform-tools")
+                .join(&exe);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let p = dir.join(&exe);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
+    let p = std::path::Path::new(&home)
+        .join("Android/Sdk/platform-tools")
+        .join(&exe);
+    p.exists().then_some(p)
+}
+
+async fn adb(args: &[&str]) -> anyhow::Result<String> {
+    let adb = adb_path().ok_or_else(|| {
+        anyhow::anyhow!("adb not found (install Android platform-tools or set ANDROID_HOME)")
+    })?;
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        tokio::process::Command::new(adb).args(args).output(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("adb timed out"))??;
+    let text =
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        anyhow::bail!("adb {}: {}", args.join(" "), text.trim());
+    }
+    Ok(text)
+}
+
+/// Phones on USB debugging (real devices only; emulators are skipped). Empty when adb is absent.
+async fn api_usb() -> Json<serde_json::Value> {
+    let Some(_) = adb_path() else {
+        return Json(serde_json::json!({"adb": false, "devices": []}));
+    };
+    let list = adb(&["devices", "-l"]).await.unwrap_or_default();
+    let devices: Vec<serde_json::Value> = list
+        .lines()
+        .skip(1)
+        .filter(|l| l.contains(" device ") || l.ends_with(" device"))
+        .filter(|l| !l.starts_with("emulator-"))
+        .map(|l| {
+            let mut it = l.split_whitespace();
+            let serial = it.next().unwrap_or("").to_string();
+            let model = l
+                .split_whitespace()
+                .find_map(|t| t.strip_prefix("model:"))
+                .unwrap_or("phone")
+                .replace('_', " ");
+            serde_json::json!({"serial": serial, "model": model})
+        })
+        .collect();
+    Json(serde_json::json!({"adb": true, "devices": devices}))
+}
+
+#[derive(Deserialize)]
+struct UsbPairReq {
+    serial: String,
+}
+/// One-click pairing over the USB cable: port-forward the control plane, the API (for a phone
+/// host) and the RPC port through adb, then hand the app a pairing payload that dials localhost.
+/// The phone still shows its confirmation card (M9) — nothing joins without a tap on the phone.
+async fn api_usb_pair(State(st): State<Arc<AppState>>, Json(r): Json<UsbPairReq>) -> Response {
+    let s = r.serial.trim().to_string();
+    if s.is_empty()
+        || !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == ':' || c == '-' || c == '_')
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "bad serial"})),
+        )
+            .into_response();
+    }
+    let steps: [&[&str]; 4] = [
+        &["-s", &s, "reverse", "tcp:7070", "tcp:7070"],
+        &["-s", &s, "reverse", "tcp:8080", "tcp:8080"],
+        &["-s", &s, "forward", "tcp:50052", "tcp:50052"],
+        &[
+            "-s",
+            &s,
+            "shell",
+            "pm",
+            "list",
+            "packages",
+            "ai.meshai.worker",
+        ],
+    ];
+    for (i, args) in steps.iter().enumerate() {
+        match adb(args).await {
+            Ok(out) if i == 3 && !out.contains("ai.meshai.worker") => {
+                return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"error": "MeshAI app is not installed on that phone — install android/app/build/outputs/apk/debug/app-debug.apk first"}))).into_response();
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": e.to_string()})),
+                )
+                    .into_response()
+            }
+        }
+    }
+    let o = st.new_offer_at(Some("127.0.0.1".into()), meshcore::CONTROL_PORT);
+    let payload = o.qr_payload();
+    if let Err(e) = adb(&[
+        "-s",
+        &s,
+        "shell",
+        "am",
+        "start",
+        "-n",
+        "ai.meshai.worker/.MainActivity",
+        "--es",
+        "payload",
+        &format!("'{}'", payload.replace('\'', "")),
+    ])
+    .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+    st.push_log(format!("USB pairing offered to {s}: confirm on the phone"));
+    Json(serde_json::json!({"ok": true, "serial": s, "host": "127.0.0.1", "note": "tap Join on the phone"})).into_response()
 }
 
 #[derive(Deserialize)]

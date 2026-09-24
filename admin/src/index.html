@@ -87,8 +87,13 @@
     <section class="view" id="view-devices" hidden>
       <div class="grid2">
         <div class="card">
-          <div class="card-h"><h3>Pair a phone</h3><button class="btn sm" id="offer-btn"><i data-i="qr"></i>New QR</button></div>
-          <div class="pair"><div id="qr" class="qr"></div><div class="muted sm" id="qr-text">Open the MeshAI app on the phone → Join → scan. Both devices must be on your own hotspot or USB tethering.</div></div>
+          <div class="card-h"><h3>Phone on USB</h3><span class="muted sm" id="usb-sub">looking for a phone with USB debugging…</span></div>
+          <div id="usb" class="usb"></div>
+          <div class="muted sm">Plug the phone in with USB debugging on. One click sets up the cable link and opens the app; you confirm on the phone. No QR needed.</div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h3>Pair by QR</h3><button class="btn sm" id="offer-btn"><i data-i="qr"></i>New QR</button></div>
+          <div class="pair"><div id="qr" class="qr"></div><div class="muted sm" id="qr-text">Open the MeshAI app on the phone → Scan. The QR carries every address of this laptop (USB tethering, ethernet, Wi-Fi); the phone tries them in order.</div></div>
         </div>
         <div class="card">
           <div class="card-h"><h3>Simulate phones</h3><span class="muted sm">for testing without hardware</span></div>

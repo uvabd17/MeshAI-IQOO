@@ -16,6 +16,10 @@ pub struct PairingOffer {
     pub host: String,
     pub control_port: u16,
     pub token: String, // hex, 16 bytes
+    /// Every address the laptop can be reached at, best first (USB tethering, ethernet, Wi-Fi…):
+    /// the phone tries them in turn, so one QR works whichever link the phone is on.
+    #[serde(default)]
+    pub hosts: Vec<String>,
 }
 
 impl PairingOffer {
@@ -66,15 +70,22 @@ impl PairingBook {
     }
 
     pub fn offer(&mut self, host: &str, control_port: u16) -> PairingOffer {
+        self.offer_multi(vec![host.to_string()], control_port)
+    }
+
+    /// Offer with an ordered list of candidate addresses (`hosts[0]` is `host`).
+    pub fn offer_multi(&mut self, hosts: Vec<String>, control_port: u16) -> PairingOffer {
         let mut raw = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut raw);
         let token = hex::encode(raw);
         self.pending.insert(Self::digest(&raw), Instant::now());
+        let host = hosts.first().cloned().unwrap_or_else(|| "127.0.0.1".into());
         PairingOffer {
             mesh_id: self.mesh_id.clone(),
-            host: host.to_string(),
+            host,
             control_port,
             token,
+            hosts,
         }
     }
 

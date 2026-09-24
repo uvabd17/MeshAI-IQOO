@@ -53,19 +53,24 @@ class ControlClient(
         MeshState.set { it.copy(coordinator = "${p.host}:${p.controlPort}", meshId = p.meshId, pendingJoin = null) }
         job = scope.launch(Dispatchers.IO) {
             var backoff = 1000L
+            var attempt = 0
             while (isActive) {
                 var wasConnected = false
+                // Try every address the laptop advertised, best link first; a working one is kept.
+                val host = p.hosts[attempt % p.hosts.size]; attempt++
                 try {
                     Socket().use { s ->
                         s.tcpNoDelay = true
-                        s.connect(InetSocketAddress(p.host, p.controlPort), 4000)
+                        s.connect(InetSocketAddress(host, p.controlPort), 4000)
+                        MeshState.set { it.copy(coordinator = "$host:${p.controlPort}") }
+                        attempt-- // stay on this host for the next reconnect
                         s.soTimeout = 45_000 // coordinator heartbeats every 10 s; 45 s of silence = dead link
                         linkLocalAddress = s.localAddress.hostAddress
                         val din = DataInputStream(s.getInputStream().buffered())
                         val dout = DataOutputStream(s.getOutputStream().buffered())
                         out = dout
                         val tok = tokenOnce ?: ""
-                        val secret = if (tok.isEmpty()) secretFor(p.meshId) else null
+                        val secret = secretFor(p.meshId) // always offered: meshd prefers a valid secret over a fresh token
                         if (tok.isEmpty() && secret == null) { MeshState.log("✗ no pairing token and no stored secret — scan a new QR"); MeshState.set { it.copy(connected = false, paired = false, lastError = "not paired") }; return@launch }
                         send(envelope { hello = hello {
                             deviceId = profiler.deviceId; displayName = profiler.displayName
@@ -76,16 +81,22 @@ class ControlClient(
                         if (first.hasBye()) {
                             MeshState.set { it.copy(connected = false, paired = false, lastError = first.bye.reason) }
                             MeshState.log("✗ ${first.bye.reason}")
-                            tokenOnce = null; clearSecret(p.meshId)
+                            tokenOnce = null
+                            // Only a definitive "you are not paired / forgotten" invalidates our secret; a used-up
+                            // or expired token must not (that erased a valid secret once and deadlocked re-pairing).
+                            val r = first.bye.reason.lowercase()
+                            if (r.contains("not paired") || r.contains("forgotten") || r.contains("wrong device secret")) clearSecret(p.meshId)
                             return@launch
                         }
                         if (first.hasPaired()) { saveSecret(p.meshId, first.paired.deviceSecret.toByteArray()); MeshState.log("paired with ${first.paired.meshId}; secret stored") }
+                        prefs.edit().putString("last_payload", p.toJson()).apply() // so the app reconnects by itself next time
                         tokenOnce = null
                         wasConnected = true
                         MeshState.set { it.copy(connected = true, paired = true, lastError = null) }
                         MeshState.log("connected to ${p.host}:${p.controlPort} (our side ${linkLocalAddress})")
                         backoff = 1000L
                         send(envelope { profile = profiler.profile() })
+                        MeshState.set { it.copy(profileSent = true) }
                         val tele = launch {
                             while (isActive) {
                                 profiler.sampleRtt(p.host, p.controlPort)

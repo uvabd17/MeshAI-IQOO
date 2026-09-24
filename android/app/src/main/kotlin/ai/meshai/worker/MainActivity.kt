@@ -8,6 +8,7 @@ import ai.meshai.worker.core.Profiler
 import ai.meshai.worker.ui.Dashboard
 import ai.meshai.worker.ui.MeshTheme
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -36,6 +37,10 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33) wanted += "android.permission.POST_NOTIFICATIONS"
         perms.launch(wanted.toTypedArray())
         offerFromIntent(intent)
+        // Already paired earlier? Reconnect by ourselves — no scan, no tap (the secret is ours).
+        if (intent?.getStringExtra(EXTRA_PAYLOAD) == null) {
+            getSharedPreferences("meshai", Context.MODE_PRIVATE).getString("last_payload", null)?.let { MeshService.join(this, it) }
+        }
         setContent {
             MeshTheme {
                 val s by MeshState.ui.collectAsState()

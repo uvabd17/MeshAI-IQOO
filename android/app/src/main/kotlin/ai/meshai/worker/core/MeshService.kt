@@ -80,7 +80,7 @@ class MeshService : Service() {
             ACTION_JOIN -> intent.getStringExtra(EXTRA_PAYLOAD)?.let { PairingPayload.parse(it) }?.let { p ->
                 acquireLocks(); client.connect(p); MeshState.log("joining ${p.meshId} @ ${p.host}")
             } ?: MeshState.log("✗ invalid pairing payload")
-            ACTION_LEAVE -> { linkGen.incrementAndGet(); runner.stop(); client.disconnect(); releaseLocks(); MeshState.set { it.copy(role = "idle", planSummary = "", modelFile = "") }; stopSelf() }
+            ACTION_LEAVE -> { getSharedPreferences("meshai", Context.MODE_PRIVATE).edit().remove("last_payload").apply(); linkGen.incrementAndGet(); runner.stop(); client.disconnect(); releaseLocks(); MeshState.set { it.copy(role = "idle", planSummary = "", modelFile = "") }; stopSelf() }
             ACTION_STOP_PROCESS -> userStop()
         }
         return START_STICKY
@@ -123,6 +123,7 @@ class MeshService : Service() {
     private suspend fun applyPlan(plan: Plan, gen: Int) {
         MeshState.currentPlan = plan
         val me = plan.placementsList.firstOrNull { it.deviceId == profiler.deviceId }
+        MeshState.set { it.copy(workerReady = false) }
         val peers = plan.placementsList.map { p -> MeshPeer(p.displayName.ifEmpty { p.deviceId }, p.kind, p.spec, if (!p.used) "unused" else if (p.isHost) "host" else "worker", p.layerStart, p.layerEnd, p.bytes, p.deviceId == profiler.deviceId, p.reason) }
         MeshState.set { it.copy(mesh = if (plan.planId == "stop") emptyList() else peers, modelLabel = if (plan.planId == "stop") "" else plan.modelLabel.ifEmpty { plan.modelFile }, nLayer = plan.nLayer, nCtx = plan.nCtx) }
         if (plan.planId == "stop" || me == null || !me.used) {
@@ -176,7 +177,7 @@ class MeshService : Service() {
             val ok = runCatching { Socket().use { it.connect(InetSocketAddress(host, port), 500) }; true }.getOrDefault(false)
             if (ok) {
                 client.notify(envelope { jobProgress = jobProgress { jobId = "worker"; fraction = 1f; note = "listening:$host:$port"; this.planId = planId } })
-                MeshState.log("worker listening on $host:$port")
+                MeshState.log("worker listening on $host:$port"); MeshState.set { it.copy(workerReady = true) }
                 return
             }
             kotlinx.coroutines.delay(500)

@@ -46,6 +46,9 @@ data class UiState(
     /** Last ~40 link RTT p50 samples for the sparkline. */
     val rttHistory: List<Float> = emptyList(),
     val socName: String = "",
+    /** Setup stepper flags: specs sent to the laptop, worker confirmed listening. */
+    val profileSent: Boolean = false,
+    val workerReady: Boolean = false,
     val osName: String = "",
 )
 

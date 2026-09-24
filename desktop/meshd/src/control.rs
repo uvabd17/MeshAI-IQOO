@@ -171,7 +171,11 @@ async fn session(
                             let mut issued: Option<Vec<u8>> = None;
                             let ok = {
                                 let mut pb = st.pairing.lock().unwrap();
-                                if !h.one_time_token.is_empty() {
+                                // A device that still holds a valid secret is a reconnect, even if it also
+                                // presents a fresh token (re-pairing after a meshd restart must just work).
+                                if !h.device_secret.is_empty() && pb.verify(&h.device_id, &h.device_secret) {
+                                    true
+                                } else if !h.one_time_token.is_empty() {
                                     if let Some(sec) = pb.redeem(&h.one_time_token, &h.device_id, &h.display_name) {
                                         issued = Some(sec);
                                         true
@@ -179,7 +183,7 @@ async fn session(
                                         false
                                     }
                                 } else {
-                                    pb.verify(&h.device_id, &h.device_secret)
+                                    false
                                 }
                             };
                             if !ok {

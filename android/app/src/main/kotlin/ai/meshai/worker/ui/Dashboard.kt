@@ -39,6 +39,7 @@ import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Thermostat
 import androidx.compose.material.icons.outlined.Wifi
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -70,11 +71,19 @@ private val BW = 3.dp
 
 /* ================= neobrutalist primitives ================= */
 
-@Composable private fun NBox(modifier: Modifier = Modifier, fill: Color? = null, shadow: Dp = 6.dp, radius: Dp = 12.dp, pad: Dp = 16.dp, content: @Composable () -> Unit) {
+@Composable private fun NBox(modifier: Modifier = Modifier, fill: Color? = null, shadow: Dp = 6.dp, radius: Dp = 12.dp, pad: Dp = 16.dp, fillHeight: Boolean = false, content: @Composable () -> Unit) {
     val t = LocalNb.current
     Box(modifier.padding(end = shadow, bottom = shadow)) {
         Box(Modifier.matchParentSize().offset(shadow, shadow).background(t.ink, RoundedCornerShape(radius)))
-        Box(Modifier.fillMaxWidth().background(fill ?: t.paper, RoundedCornerShape(radius)).border(BW, t.ink, RoundedCornerShape(radius)).padding(pad)) { content() }
+        Box(Modifier.fillMaxWidth().then(if (fillHeight) Modifier.fillMaxHeight() else Modifier).background(fill ?: t.paper, RoundedCornerShape(radius)).border(BW, t.ink, RoundedCornerShape(radius)).padding(pad)) { content() }
+    }
+}
+
+/** Two cards side by side with equal height. */
+@Composable private fun Grid2(a: @Composable () -> Unit, b: @Composable () -> Unit) {
+    Row(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Box(Modifier.weight(1f).fillMaxHeight()) { a() }
+        Box(Modifier.weight(1f).fillMaxHeight()) { b() }
     }
 }
 
@@ -111,20 +120,20 @@ private val BW = 3.dp
 @Composable private fun Muted(t: String, size: Int = 12) = Text(t, fontSize = size.sp, color = LocalNb.current.muted, fontWeight = FontWeight.Medium)
 @Composable private fun Mono(t: String, size: Int = 11, color: Color? = null) = Text(t, fontFamily = FontFamily.Monospace, fontSize = size.sp, color = color ?: LocalNb.current.muted, fontWeight = FontWeight.SemiBold)
 @Composable private fun Rule() { val t = LocalNb.current; Box(Modifier.fillMaxWidth().height(BW).background(t.ink)) }
-@Composable private fun BigIcon(icon: ImageVector, fill: Color? = null) {
+@Composable private fun BigIcon(icon: ImageVector, fill: Color? = null, size: Dp = 52.dp) {
     val t = LocalNb.current
-    Box(Modifier.size(52.dp).background(fill ?: t.accent, RoundedCornerShape(10.dp)).border(BW, t.ink, RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
-        Icon(icon, null, Modifier.size(32.dp), tint = Color(0xFF0A0A0A).takeIf { (fill ?: t.accent) == t.accent } ?: t.ink)
+    Box(Modifier.size(size).background(fill ?: t.accent, RoundedCornerShape(10.dp)).border(BW, t.ink, RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+        Icon(icon, null, Modifier.size(size * 0.6f), tint = Color(0xFF0A0A0A).takeIf { (fill ?: t.accent) == t.accent } ?: t.ink)
     }
 }
-/** Card head: big icon + plain title + one-line meaning. */
-@Composable private fun Head(icon: ImageVector, title: String, meaning: String, fill: Color? = null) {
+/** Card head: big icon + plain title + one-line meaning. `small` for grid cards. */
+@Composable private fun Head(icon: ImageVector, title: String, meaning: String, fill: Color? = null, small: Boolean = false) {
     val t = LocalNb.current
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        BigIcon(icon, fill)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(if (small) 8.dp else 12.dp)) {
+        BigIcon(icon, fill, if (small) 38.dp else 52.dp)
         Column(Modifier.weight(1f)) {
-            Text(title, fontWeight = FontWeight.Black, fontSize = 18.sp, color = t.ink)
-            Muted(meaning, 12)
+            Text(title, fontWeight = FontWeight.Black, fontSize = if (small) 15.sp else 18.sp, color = t.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!small) Muted(meaning, 12) else Muted(meaning, 10)
         }
     }
 }
@@ -135,10 +144,10 @@ private val BW = 3.dp
 fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfirmJoin: (PairingPayload) -> Unit, onRejectJoin: () -> Unit, onLeave: () -> Unit, onStop: () -> Unit, onBench: () -> Unit) {
     val t = LocalNb.current
     var tab by rememberSaveable { mutableStateOf(0) }
-    Column(Modifier.fillMaxSize().background(t.paper)) {
-        LazyColumn(Modifier.weight(1f).padding(horizontal = 18.dp), contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-            item { Spacer(Modifier.statusBarsPadding().height(26.dp)) }
+    Column(Modifier.fillMaxSize().background(t.paper).statusBarsPadding()) {
+        LazyColumn(Modifier.weight(1f).padding(horizontal = 18.dp), contentPadding = PaddingValues(top = 28.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             item { Header(s) }
+            if (s.paired || s.connected) item { SetupSteps(s) }
             s.pendingJoin?.let { p -> item { PendingJoinCard(p, onConfirmJoin, onRejectJoin) } }
             if (tab == 0) {
                 if (!s.paired) item { JoinCard(onScan, onJoin, s.lastError) }
@@ -149,12 +158,9 @@ fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfir
                 item { ActionsRow(s, onBench, onScan, onLeave) }
                 item { LogCard(s) }
             } else {
-                item { SpeedCard(s, onBench) }
-                item { CoresCard(s) }
-                item { MemoryCard(s) }
-                item { HeatCard(s) }
-                item { BatteryCard(s) }
-                item { ConnectionCard(s) }
+                item { Grid2({ SpeedCard(s, onBench) }, { CoresCard(s) }) }
+                item { Grid2({ MemoryCard(s) }, { HeatCard(s) }) }
+                item { Grid2({ BatteryCard(s) }, { ConnectionCard(s) }) }
                 item { AboutCard(s) }
             }
         }
@@ -202,6 +208,64 @@ fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfir
         }
         Spacer(Modifier.weight(1f))
         Sticker(when { !s.paired -> "idle"; !s.connected -> "reconnecting"; s.role == "idle" -> "paired"; else -> s.role }, fill = when { !s.paired -> t.paper2; !s.connected -> t.danger; s.role == "host" -> t.host; s.role == "worker" -> t.worker; else -> t.accent })
+    }
+}
+
+/* ================= setup stepper ================= */
+
+private data class Step(val title: String, val detail: String, val done: Boolean, val active: Boolean, val progress: Float? = null)
+
+private fun steps(s: UiState): List<Step> {
+    val planned = s.mesh.isNotEmpty() && s.role != "idle"
+    val host = s.role == "host"
+    val downloading = s.downloadPct in 0..99
+    val modelReady = host && (s.processRunning || s.downloadPct == 100)
+    val engine = s.processRunning
+    val ready = if (host) s.processRunning else s.workerReady
+    val l = mutableListOf<Step>()
+    l += Step("Connect to the laptop", if (s.connected) "linked to ${s.coordinator}" else "dialling ${s.coordinator.ifEmpty { "…" }}", s.connected, !s.connected)
+    l += Step("Pair", if (s.paired) "secret stored for ${s.meshId}" else "waiting for the laptop to accept", s.paired, s.connected && !s.paired)
+    l += Step("Scan this phone", if (s.profileSent) "chip, cores, memory and heat sent" else "reading chip, cores, memory…", s.profileSent, s.paired && !s.profileSent)
+    l += Step("Get a plan", if (planned) "I am the ${if (host) "brain" else "helper"}" else "the laptop decides who holds what", planned, s.profileSent && !planned)
+    if (host) l += Step("Get the model", when { downloading -> "${s.downloadPct}% from the laptop"; modelReady -> "on this phone"; else -> "from the laptop" }, modelReady, planned && !modelReady, if (downloading) s.downloadPct / 100f else null)
+    l += Step("Start the engine", if (engine) "llama.cpp is running" else "launching llama.cpp", engine, planned && (host && modelReady || !host) && !engine)
+    l += Step("Ready", if (ready) (if (host) "answering the laptop's questions" else "computing my layers for the laptop") else "almost there", ready, engine && !ready)
+    return l
+}
+
+@Composable private fun SetupSteps(s: UiState) {
+    val t = LocalNb.current
+    val st = steps(s)
+    val done = st.count { it.done }
+    val allDone = st.all { it.done }
+    NBox(fill = if (allDone) t.host else t.paper, shadow = 5.dp, pad = 12.dp) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Label(if (allDone) "All set" else "Setting up"); Spacer(Modifier.weight(1f))
+                if (!allDone) Sticker("$done / ${st.size}", fill = t.accent)
+                else Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { st.forEach { _ -> Box(Modifier.size(14.dp).background(t.ink, RoundedCornerShape(3.dp))) } }
+            }
+            if (!allDone) {
+                Bar(done.toFloat() / st.size)
+                st.chunked(2).forEach { pair ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        pair.forEach { step -> StepChip(step, Modifier.weight(1f)) }
+                        if (pair.size == 1) Spacer(Modifier.weight(1f))
+                    }
+                }
+                st.firstOrNull { it.active }?.let { a -> Muted("Now: ${a.title} — ${a.detail}", 11); a.progress?.let { Bar(it) } }
+            } else Muted(st.last().detail, 11)
+        }
+    }
+}
+
+@Composable private fun StepChip(step: Step, modifier: Modifier) {
+    val t = LocalNb.current
+    Row(modifier.background(if (step.active) t.accent else t.paper, RoundedCornerShape(6.dp)).border(2.dp, if (step.done || step.active) t.ink else t.muted, RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(Modifier.size(18.dp).background(if (step.done) t.ink else t.paper, RoundedCornerShape(4.dp)).border(2.dp, t.ink, RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) {
+            when { step.done -> Text("✓", color = t.paper, fontWeight = FontWeight.Black, fontSize = 11.sp); step.active -> CircularProgressIndicator(Modifier.size(10.dp), color = t.ink, strokeWidth = 2.dp); else -> {} }
+        }
+        Text(step.title, fontWeight = FontWeight.Black, fontSize = 11.sp, color = if (step.done || step.active) t.ink else t.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -287,7 +351,12 @@ fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfir
                 }
             }
             StackBar(s)
-            s.mesh.sortedBy { if (it.role == "host") 0 else if (it.role == "worker") 1 else 2 }.forEach { p -> PeerRow(p, s.nLayer) }
+            s.mesh.sortedBy { if (it.role == "host") 0 else if (it.role == "worker") 1 else 2 }.chunked(2).forEach { pair ->
+                Row(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    pair.forEach { p -> Box(Modifier.weight(1f).fillMaxHeight()) { PeerRow(p, s.nLayer) } }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
         }
     }
 }
@@ -315,23 +384,19 @@ fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfir
     val t = LocalNb.current
     val used = p.role != "unused"
     val fill = when (p.role) { "host" -> t.host; "worker" -> t.worker; else -> t.paper2 }
-    NBox(fill = fill, shadow = 3.dp, radius = 10.dp, pad = 12.dp) {
+    NBox(fill = fill, shadow = 3.dp, radius = 10.dp, pad = 10.dp, fillHeight = true) {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Box(Modifier.size(48.dp).background(t.paper, RoundedCornerShape(8.dp)).border(BW, t.ink, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-                    Icon(if (p.kind == "laptop") Icons.Outlined.Laptop else Icons.Outlined.PhoneAndroid, null, Modifier.size(30.dp), tint = t.ink)
-                }
-                Column(Modifier.weight(1f)) {
-                    Text(p.name, fontWeight = FontWeight.Black, fontSize = 15.sp, color = t.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(when (p.role) { "host" -> "THE BRAIN · RUNS THE MODEL"; "worker" -> "HELPER · COMPUTES LAYERS"; else -> "NOT NEEDED" } + if (p.isMe) "  ·  ME" else "", fontSize = 10.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.Black, color = t.ink)
-                }
+            Box(Modifier.size(40.dp).background(t.paper, RoundedCornerShape(8.dp)).border(BW, t.ink, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+                Icon(if (p.kind == "laptop") Icons.Outlined.Laptop else Icons.Outlined.PhoneAndroid, null, Modifier.size(26.dp), tint = t.ink)
             }
-            if (p.spec.isNotEmpty()) Mono(p.spec, 11, t.ink)
+            Text(p.name, fontWeight = FontWeight.Black, fontSize = 13.sp, color = t.ink, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 15.sp)
+            Text(when (p.role) { "host" -> "THE BRAIN"; "worker" -> "HELPER"; else -> "NOT NEEDED" } + if (p.isMe) " · ME" else "", fontSize = 10.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.Black, color = t.ink)
+            if (p.spec.isNotEmpty()) Mono(p.spec.split(" · ").take(3).joinToString(" · "), 10, t.ink)
             if (used) {
                 val n = p.layerEnd - p.layerStart
-                Text("holds layers ${p.layerStart}–${maxOf(p.layerStart, p.layerEnd - 1)}  ·  $n of $nLayer  ·  ${gb(p.bytes)} of memory", fontSize = 12.sp, fontWeight = FontWeight.Black, color = t.ink)
+                Text("layers ${p.layerStart}–${maxOf(p.layerStart, p.layerEnd - 1)}\n$n of $nLayer · ${gb(p.bytes)}", fontSize = 11.sp, fontWeight = FontWeight.Black, color = t.ink, lineHeight = 14.sp)
                 LayerBar(p.layerStart, p.layerEnd, nLayer)
-            } else if (p.reason.isNotEmpty()) Muted(p.reason.substringAfter(": ").take(100), 11)
+            } else if (p.reason.isNotEmpty()) Muted(p.reason.substringAfter(": ").take(60), 10)
         }
     }
 }
@@ -365,19 +430,16 @@ fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfir
 
 @Composable private fun SpeedCard(s: UiState, onBench: () -> Unit) {
     val t = LocalNb.current
-    NBox(fill = t.accent, shadow = 8.dp) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Head(Icons.Outlined.Speed, "Speed", "How many words per second this phone can write.", fill = t.paper)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Gauge(value = s.decodeTps, max = 40f, Modifier.size(150.dp))
-                Spacer(Modifier.width(16.dp))
-                Column {
-                    Text(if (s.decodeTps > 0) "%.1f".format(s.decodeTps) else "—", fontSize = 44.sp, fontWeight = FontWeight.Black, color = Color(0xFF0A0A0A), fontFamily = FontFamily.Monospace, letterSpacing = (-2).sp)
-                    Text("tokens per second", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0A0A0A))
-                    Text(when { s.decodeTps <= 0 -> "run a speed test"; s.decodeTps < 5 -> "slow · fine for short answers"; s.decodeTps < 15 -> "good · reads like typing"; else -> "fast · faster than you read" }, fontSize = 12.sp, color = Color(0xFF0A0A0A))
-                }
+    NBox(fill = t.accent, shadow = 5.dp, pad = 12.dp, fillHeight = true) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Head(Icons.Outlined.Speed, "Speed", "words per second", fill = t.paper, small = true)
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Gauge(value = s.decodeTps, max = 40f, Modifier.size(110.dp))
+                Text(if (s.decodeTps > 0) "%.1f".format(s.decodeTps) else "—", fontSize = 26.sp, fontWeight = FontWeight.Black, color = Color(0xFF0A0A0A), fontFamily = FontFamily.Monospace, letterSpacing = (-1).sp)
             }
-            NButton("Run speed test", Modifier.fillMaxWidth(), fill = t.paper, icon = Icons.Outlined.Bolt) { onBench() }
+            Text(when { s.decodeTps <= 0 -> "run a speed test"; s.decodeTps < 5 -> "slow · short answers"; s.decodeTps < 15 -> "good · like typing"; else -> "fast" }, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0A0A0A))
+            Spacer(Modifier.weight(1f))
+            NButton("Test", Modifier.fillMaxWidth(), fill = t.paper, icon = Icons.Outlined.Bolt) { onBench() }
         }
     }
 }
@@ -397,11 +459,11 @@ fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfir
 
 @Composable private fun CoresCard(s: UiState) {
     val t = LocalNb.current
-    NBox {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Head(Icons.Outlined.Memory, "Cores at work", "Each bar is one CPU core. Taller = running faster right now.")
-            if (s.coreLoads.isEmpty()) Muted("waiting for the first sample…")
-            else Row(Modifier.fillMaxWidth().height(120.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
+    NBox(pad = 12.dp, fillHeight = true) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Head(Icons.Outlined.Memory, "Cores", "taller = busier", small = true)
+            if (s.coreLoads.isEmpty()) Muted("waiting…")
+            else Row(Modifier.fillMaxWidth().height(96.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Bottom) {
                 s.coreLoads.forEachIndexed { i, l ->
                     val cap = s.coreCaps.getOrNull(i) ?: 1024
                     val fill = when { cap >= 1000 -> t.accent; cap >= 500 -> t.worker; else -> t.host }
@@ -412,12 +474,10 @@ fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfir
                     }
                 }
             }
-            Rule()
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Legend(t.accent, "prime"); Legend(t.worker, "big"); Legend(t.host, "small")
-                Spacer(Modifier.weight(1f))
-                Mono("${s.threads} threads for the model", 11, t.ink)
             }
+            Mono("${s.threads} threads for the model", 10, t.ink)
         }
     }
 }
@@ -429,13 +489,11 @@ fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfir
     val total = s.totalBytes.coerceAtLeast(1)
     val free = s.availBytes.coerceIn(0, total)
     val usable = (free - 1_500_000_000L).coerceAtLeast(0)
-    NBox {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Head(Icons.Outlined.Memory, "Memory", "How much room there is for a model.")
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(if (s.availBytes > 0) gb(usable) else "—", fontSize = 40.sp, fontWeight = FontWeight.Black, color = t.ink, fontFamily = FontFamily.Monospace, letterSpacing = (-2).sp)
-                Spacer(Modifier.width(8.dp)); Text("usable for models", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = t.ink, modifier = Modifier.padding(bottom = 8.dp))
-            }
+    NBox(pad = 12.dp, fillHeight = true) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Head(Icons.Outlined.Memory, "Memory", "room for a model", small = true)
+            Text(if (s.availBytes > 0) gb(usable) else "—", fontSize = 28.sp, fontWeight = FontWeight.Black, color = t.ink, fontFamily = FontFamily.Monospace, letterSpacing = (-1).sp)
+            Muted("usable for models", 10)
             Row(Modifier.fillMaxWidth().height(28.dp).background(t.paper, RoundedCornerShape(6.dp)).border(BW, t.ink, RoundedCornerShape(6.dp)).padding(3.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                 val usedF = ((total - free).toFloat() / total).coerceIn(0.02f, 1f)
                 val keepF = ((free - usable).toFloat() / total).coerceIn(0.02f, 1f)
@@ -444,8 +502,8 @@ fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfir
                 Box(Modifier.weight(keepF).fillMaxHeight().background(t.danger, RoundedCornerShape(3.dp)).border(2.dp, t.ink, RoundedCornerShape(3.dp)))
                 Box(Modifier.weight(usableF).fillMaxHeight().background(t.host, RoundedCornerShape(3.dp)).border(2.dp, t.ink, RoundedCornerShape(3.dp)))
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { Legend(t.paper3(), "other apps ${gb(total - free)}"); Legend(t.danger, "kept safe 1.5 GB"); Legend(t.host, "for models") }
-            Mono("${gb(free)} free of ${gb(total)} total", 11)
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) { Legend(t.paper3(), "apps ${gb(total - free)}"); Legend(t.danger, "safety 1.5 GB"); Legend(t.host, "models ${gb(usable)}") }
+            Mono("${gb(free)} free / ${gb(total)}", 10)
         }
     }
 }
@@ -456,17 +514,17 @@ private fun NbTokens.paper3() = paper2
     val h = s.thermalHeadroom // 0 = cool … 1 = throttling
     val word = when { h <= 0f -> "Cool"; h < 0.5f -> "Warm"; h < 0.85f -> "Hot"; else -> "Too hot" }
     val fill = when { h < 0.5f -> t.host; h < 0.85f -> t.accent; else -> t.danger }
-    NBox {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Head(Icons.Outlined.Thermostat, "Heat", "Phones slow down when they get hot.", fill = fill)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Thermometer(h.coerceIn(0f, 1f), fill, Modifier.width(44.dp).height(130.dp))
+    NBox(pad = 12.dp, fillHeight = true) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Head(Icons.Outlined.Thermostat, "Heat", "hot = slower", fill = fill, small = true)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Thermometer(h.coerceIn(0f, 1f), fill, Modifier.width(34.dp).height(100.dp))
                 Column {
-                    Text(word.uppercase(), fontSize = 34.sp, fontWeight = FontWeight.Black, color = t.ink, letterSpacing = (-1).sp)
-                    Text(when { h <= 0f -> "Nothing to worry about."; h < 0.5f -> "Fine for long runs."; h < 0.85f -> "It will start slowing down soon."; else -> "Let it cool before running a model." }, fontSize = 13.sp, color = t.ink, fontWeight = FontWeight.Medium)
-                    Mono("headroom %.2f · status %d".format(h, s.thermalStatus), 11)
+                    Text(word.uppercase(), fontSize = 22.sp, fontWeight = FontWeight.Black, color = t.ink, letterSpacing = (-1).sp)
+                    Text(when { h <= 0f -> "all good"; h < 0.5f -> "fine for long runs"; h < 0.85f -> "slowing soon"; else -> "let it cool" }, fontSize = 11.sp, color = t.ink, fontWeight = FontWeight.Medium)
                 }
             }
+            Mono("headroom %.2f · status %d".format(h, s.thermalStatus), 10)
         }
     }
 }
@@ -491,21 +549,19 @@ private fun NbTokens.paper3() = paper2
 
 @Composable private fun BatteryCard(s: UiState) {
     val t = LocalNb.current
-    NBox {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Head(if (s.charging) Icons.Outlined.BatteryChargingFull else Icons.Outlined.BatteryFull, "Battery", if (s.charging) "Plugged in — best for long runs." else "Running a model drains the battery faster.")
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                Row(Modifier.weight(1f).height(40.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Row(Modifier.weight(1f).fillMaxHeight().background(t.paper, RoundedCornerShape(6.dp)).border(BW, t.ink, RoundedCornerShape(6.dp)).padding(4.dp)) {
-                        val f = (s.batteryPct / 100f).coerceIn(0.02f, 1f)
-                        Box(Modifier.weight(f).fillMaxHeight().background(if (s.batteryPct < 20) t.danger else t.host, RoundedCornerShape(3.dp)).border(2.dp, t.ink, RoundedCornerShape(3.dp)))
-                        if (f < 1f) Spacer(Modifier.weight(1f - f))
-                    }
-                    Box(Modifier.width(8.dp).height(18.dp).background(t.ink, RoundedCornerShape(topEnd = 3.dp, bottomEnd = 3.dp)))
+    NBox(pad = 12.dp, fillHeight = true) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Head(if (s.charging) Icons.Outlined.BatteryChargingFull else Icons.Outlined.BatteryFull, "Battery", if (s.charging) "plugged in" else "on battery", small = true)
+            Text(if (s.batteryPct > 0) "${s.batteryPct}%" else "—", fontSize = 28.sp, fontWeight = FontWeight.Black, color = t.ink, fontFamily = FontFamily.Monospace, letterSpacing = (-1).sp)
+            Row(Modifier.fillMaxWidth().height(30.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f).fillMaxHeight().background(t.paper, RoundedCornerShape(6.dp)).border(BW, t.ink, RoundedCornerShape(6.dp)).padding(3.dp)) {
+                    val f = (s.batteryPct / 100f).coerceIn(0.02f, 1f)
+                    Box(Modifier.weight(f).fillMaxHeight().background(if (s.batteryPct < 20) t.danger else t.host, RoundedCornerShape(3.dp)).border(2.dp, t.ink, RoundedCornerShape(3.dp)))
+                    if (f < 1f) Spacer(Modifier.weight(1f - f))
                 }
-                Text(if (s.batteryPct > 0) "${s.batteryPct}%" else "—", fontSize = 36.sp, fontWeight = FontWeight.Black, color = t.ink, fontFamily = FontFamily.Monospace, letterSpacing = (-2).sp)
+                Box(Modifier.width(6.dp).height(14.dp).background(t.ink, RoundedCornerShape(topEnd = 3.dp, bottomEnd = 3.dp)))
             }
-            Mono(if (s.charging) "charging" else "on battery", 11)
+            Muted(if (s.charging) "best for long runs" else "a model drains it faster", 10)
         }
     }
 }
@@ -514,19 +570,13 @@ private fun NbTokens.paper3() = paper2
     val t = LocalNb.current
     val rtt = s.rttP50
     val word = when { rtt <= 0f -> "—"; rtt < 5f -> "Excellent"; rtt < 15f -> "Good"; rtt < 40f -> "OK"; else -> "Slow" }
-    NBox {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Head(Icons.Outlined.Wifi, "Connection to the laptop", "A fast link lets the two devices share work.", fill = when { rtt <= 0f -> t.paper2; rtt < 15f -> t.host; rtt < 40f -> t.accent; else -> t.danger })
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(word.uppercase(), fontSize = 30.sp, fontWeight = FontWeight.Black, color = t.ink, letterSpacing = (-1).sp)
-                Spacer(Modifier.weight(1f))
-                Mono(if (rtt > 0) "%.1f ms round trip".format(rtt) else "not measured yet", 12, t.ink)
-            }
-            Sparkline(s.rttHistory, Modifier.fillMaxWidth().height(70.dp))
-            Rule()
-            Row { Mono("laptop", 11); Spacer(Modifier.weight(1f)); Mono(s.coordinator.ifEmpty { "—" }, 12, t.ink) }
-            Row { Mono("link", 11); Spacer(Modifier.weight(1f)); Mono(if (s.connected) "connected · checked every 10 s" else "reconnecting…", 12, t.ink) }
-            Row { Mono("worst recently", 11); Spacer(Modifier.weight(1f)); Mono(if (s.rttP95 > 0) "%.1f ms".format(s.rttP95) else "—", 12, t.ink) }
+    NBox(pad = 12.dp, fillHeight = true) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Head(Icons.Outlined.Wifi, "Link", "to the laptop", fill = when { rtt <= 0f -> t.paper2; rtt < 15f -> t.host; rtt < 40f -> t.accent; else -> t.danger }, small = true)
+            Text(word.uppercase(), fontSize = 22.sp, fontWeight = FontWeight.Black, color = t.ink, letterSpacing = (-1).sp)
+            Mono(if (rtt > 0) "%.1f ms · worst %.0f".format(rtt, s.rttP95) else "not measured yet", 10, t.ink)
+            Sparkline(s.rttHistory, Modifier.fillMaxWidth().height(48.dp))
+            Mono(if (s.connected) "connected" else "reconnecting…", 10, t.ink)
         }
     }
 }
@@ -549,13 +599,20 @@ private fun NbTokens.paper3() = paper2
 
 @Composable private fun AboutCard(s: UiState) {
     val t = LocalNb.current
-    NBox(shadow = 4.dp) {
+    NBox(shadow = 4.dp, pad = 12.dp) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Head(Icons.Outlined.PhoneAndroid, "This phone", "What the laptop knows about it.")
-            Row { Mono("chip", 11); Spacer(Modifier.weight(1f)); Mono(s.socName.ifEmpty { "—" }, 12, t.ink) }
-            Row { Mono("system", 11); Spacer(Modifier.weight(1f)); Mono(s.osName.ifEmpty { "—" }, 12, t.ink) }
-            Row { Mono("cores the app may use", 11); Spacer(Modifier.weight(1f)); Mono(s.cpusAllowed, 12, t.ink) }
-            Row { Mono("capability", 11); Spacer(Modifier.weight(1f)); Mono(if (s.tier.isEmpty()) "—" else "tier ${s.tier} · arm64 + dotprod + i8mm", 12, t.ink) }
+            Head(Icons.Outlined.PhoneAndroid, "This phone", "what the laptop knows about it", small = true)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Mono("chip", 10); Text(s.socName.ifEmpty { "—" }, fontSize = 12.sp, fontWeight = FontWeight.Black, color = t.ink)
+                    Mono("system", 10); Text(s.osName.ifEmpty { "—" }, fontSize = 12.sp, fontWeight = FontWeight.Black, color = t.ink)
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Mono("cores the app may use", 10); Text(s.cpusAllowed, fontSize = 12.sp, fontWeight = FontWeight.Black, color = t.ink)
+                    Mono("laptop", 10); Text(s.coordinator.ifEmpty { "—" }, fontSize = 12.sp, fontWeight = FontWeight.Black, color = t.ink)
+                }
+            }
+            Mono(if (s.tier.isEmpty()) "—" else "tier ${s.tier} · arm64 + dotprod + i8mm", 10)
         }
     }
 }

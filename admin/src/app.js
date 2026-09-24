@@ -138,12 +138,29 @@
       return `<div class="mnode ${used ? (p.role === "Host" ? "host" : "worker") : "unused"} ${d.online ? "" : "offline"}">
         <div class="mn-top">${ICON[kindOf(d)]}<div><div class="mn-name">${esc(d.name)}</div><div class="mn-role">${esc(used ? (p.role === "Host" ? "host · runs the model" : "compute worker") : (role || "paired · idle"))}</div></div></div>
         <div class="mn-spec">${esc(specOf(d))}</div>
+        ${setupSteps(d, p)}
         ${coreBars(d)}
         ${layers}${bar}
         <div class="mn-status">${esc(st.text)}${st.pct != null ? ` <span class="pct">${Math.round(st.pct * 100)}%</span><div class="pbar"><i style="width:${(st.pct * 100).toFixed(0)}%"></i></div>` : ""}</div>
       </div>`;
     }).join("") || '<div class="muted">no devices</div>';
     $("#mesh-sub").textContent = plan ? plan.summary : `${S.devices.filter(d => d.online).length} device(s) online`;
+  }
+  function setupSteps(d, p) {
+    if (d.is_local) return "";
+    const r = S.run || {}; const pr = d.progress || {}; const fresh = d.progress && (Date.now() - pr.ms) < 180000;
+    const used = p && p.role !== "Rejected"; const host = used && p.role === "Host";
+    const dl = fresh && pr.job === "download" ? pr.fraction : (host && r.status === "ready" ? 1 : null);
+    const engine = host ? (r.status === "ready") : (fresh && pr.job === "worker") || (d.worker_ready_plan && d.worker_ready_plan === r.plan_id);
+    const steps = [
+      ["Paired", !!d.online || !!d.profile],
+      ["Specs received", !!d.profile],
+      ["Plan sent", !!d.has_plan || used],
+      ...(host ? [["Model on phone", dl != null && dl >= 1, dl]] : []),
+      ["Engine running", !!engine],
+      ["Ready", host ? r.status === "ready" : !!engine && r.status === "ready"],
+    ];
+    return `<div class="steps">${steps.map(([k, ok, frac]) => `<span class="step ${ok ? "ok" : (frac != null ? "busy" : "")}" title="${esc(k)}"><b></b>${esc(k)}${frac != null && frac < 1 ? ` ${Math.round(frac * 100)}%` : ""}</span>`).join("")}</div>`;
   }
   function coreBars(d) {
     const tel = d.telemetry || {}; const loads = tel.core_loads || []; const caps = ((d.profile || {}).cores || []).map(c => c.capacity);
@@ -245,7 +262,8 @@
     $$("[data-limit]", el).forEach(i => i.onchange = async () => { await api(`/api/devices/${i.dataset.limit}/limit`, { method: "POST", body: JSON.stringify({ usable_gb: i.value ? +i.value : null }) }); toast("cap updated"); poll(); });
     $$("[data-forget]", el).forEach(b => b.onclick = async () => { await api(`/api/devices/${b.dataset.forget}`, { method: "DELETE" }); poll(); });
     $$("[data-bench]", el).forEach(b => b.onclick = async () => { const m = $("#qs-model").value; if (!m) return toast("pick a model first"); b.disabled = true; try { const r = await api("/api/bench", { method: "POST", body: JSON.stringify({ model: m, threads: 4 }) }); toast(`laptop: ${fmt(r.prompt_tps, 0)} pp / ${fmt(r.decode_tps, 1)} tg tok/s`); } catch (e) { toast(e.message); } b.disabled = false; poll(); });
-    if (OFFER) { $("#qr").innerHTML = OFFER.svg; $("#qr-text").innerHTML = `Scan with the MeshAI app. Coordinator <span class="mono">${esc(OFFER.host)}:${OFFER.port}</span>. Token is single-use, valid 10 min — shown only on this screen.`; }
+    if (OFFER) { $("#qr").innerHTML = OFFER.svg; $("#qr-text").innerHTML = `Scan with the MeshAI app. The phone will try: ${(OFFER.links || []).map(l => `<span class="tag">${esc(l.kind)}</span> <span class="mono">${esc(l.ip)}</span>`).join(" → ") || `<span class="mono">${esc(OFFER.host)}</span>`} on port ${OFFER.port}. Token is single-use, valid 10 min — shown only on this screen.`; }
+    renderUsb();
     if (S.mirrored) { $("#offer-btn").disabled = true; $("#sim-btn").disabled = true; }
   }
   function renderModels() {
@@ -301,8 +319,18 @@
   $("#stop-btn").onclick = async () => { await api("/api/stop", { method: "POST" }); toast("stopped"); poll(); };
   $("#act-run").onclick = () => $("#qs-run").click();
   $("#act-stop").onclick = () => $("#stop-btn").click();
-  $("#act-qr").onclick = () => { show("devices"); $("#offer-btn").click(); };
   $("#act-chat").onclick = () => show("chat");
+  let USB = { adb: false, devices: [] }; let usbBusy = false;
+  async function pollUsb() { if (view !== "devices" && view !== "overview") return; try { USB = await api("/api/usb"); } catch { USB = { adb: false, devices: [] }; } renderUsb(); }
+  function renderUsb() {
+    const el = $("#usb"); if (!el) return;
+    $("#usb-sub").textContent = !USB.adb ? "adb not found on this laptop" : USB.devices.length ? `${USB.devices.length} phone${USB.devices.length > 1 ? "s" : ""} on USB` : "no phone with USB debugging found";
+    el.innerHTML = USB.devices.map(d => `<div class="u">${ICON.phone}<div class="grow"><div class="u-name">${esc(d.model)}</div><div class="u-serial">${esc(d.serial)} · ${devById && S.devices.some(x => x.online && !x.is_local) ? "a phone is already paired" : "not paired yet"}</div></div><button class="btn primary sm" data-usb="${esc(d.serial)}" ${usbBusy ? "disabled" : ""}><i data-i="phone"></i>Pair over USB</button></div>`).join("") || "";
+    drawIcons(el);
+    $$("[data-usb]", el).forEach(b => b.onclick = async () => { usbBusy = true; renderUsb(); try { const r = await api("/api/usb/pair", { method: "POST", body: JSON.stringify({ serial: b.dataset.usb }) }); toast(`${r.note} (${r.serial})`); } catch (e) { toast(e.message); } usbBusy = false; renderUsb(); });
+  }
+  setInterval(pollUsb, 5000); pollUsb();
+  $("#act-qr").onclick = async () => { show("devices"); await pollUsb(); if (USB.devices.length === 1) { $("[data-usb]").click(); } else { $("#offer-btn").click(); } };
   $("#offer-btn").onclick = async () => { try { OFFER = await api("/api/pair/offer", { method: "POST" }); renderDevices(); } catch (e) { toast(e.message); } };
   $("#sim-btn").onclick = async () => { try { const r = await api("/api/sim/workers", { method: "POST", body: JSON.stringify({ n: +$("#sim-n").value, usable_gb: +$("#sim-gb").value, spawn: $("#sim-spawn").checked }) }); toast(`simulated ${$("#sim-n").value} phone(s)${r.spawned_ports.length ? " with live RPC workers on " + r.spawned_ports.join(", ") : ""}`); poll(); } catch (e) { toast(e.message); } };
   $("#dl-btn").onclick = async () => { try { await api("/api/models/download", { method: "POST", body: JSON.stringify({ url: $("#dl-url").value, file: $("#dl-file").value }) }); toast("download started"); poll(); } catch (e) { toast(e.message); } };

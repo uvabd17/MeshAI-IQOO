@@ -458,11 +458,23 @@ impl AppState {
     /// The offer names the laptop address the phone must dial; a laptop with several links
     /// (Wi-Fi + USB tethering) can pick one explicitly (`POST /api/pair/offer {"host": …}`).
     pub fn new_offer_at(&self, host: Option<String>, control_port: u16) -> PairingOffer {
-        let ip = host
-            .filter(|h| !h.is_empty())
-            .or_else(|| local_ip_address::local_ip().ok().map(|i| i.to_string()))
-            .unwrap_or_else(|| "127.0.0.1".into());
-        let o = self.pairing.lock().unwrap().offer(&ip, control_port);
+        let mut hosts: Vec<String> = local_links().into_iter().map(|(ip, _)| ip).collect();
+        if let Some(h) = host.filter(|h| !h.is_empty()) {
+            hosts.retain(|x| x != &h);
+            hosts.insert(0, h);
+        }
+        if hosts.is_empty() {
+            hosts.push(
+                local_ip_address::local_ip()
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|_| "127.0.0.1".into()),
+            );
+        }
+        let o = self
+            .pairing
+            .lock()
+            .unwrap()
+            .offer_multi(hosts, control_port);
         *self.offer.write().unwrap() = Some(o.clone());
         o
     }
@@ -492,9 +504,26 @@ impl AppState {
             }
         }
     }
+    /// Paired devices survive a restart: they are listed (offline) so the admin can see and
+    /// forget them, and a stale entry can never block a fresh pairing silently.
     fn load_paired(&self) {
         if let Ok(s) = std::fs::read_to_string(self.paired_path()) {
             if let Ok(list) = serde_json::from_str::<Vec<PairedDevice>>(&s) {
+                {
+                    let mut d = self.devices.write().unwrap();
+                    for p in &list {
+                        d.entry(p.device_id.clone()).or_insert_with(|| {
+                            let mut dev = Self::new_remote_device(
+                                &p.device_id,
+                                &p.name,
+                                "",
+                                meshcore::RPC_PORT,
+                            );
+                            dev.online = false;
+                            dev
+                        });
+                    }
+                }
                 self.pairing.lock().unwrap().import(list);
             }
         }
@@ -803,6 +832,55 @@ pub fn short_id(id: &str) -> String {
         "dev-{}",
         &hex::encode(sha2::Sha256::digest(id.as_bytes()))[..6]
     )
+}
+
+/// The laptop's usable IPv4 addresses with the kind of link each belongs to, best-for-a-phone
+/// first: USB tethering (RNDIS), then ethernet/hotspot, then Wi-Fi. Loopback, docker and virtual
+/// bridges are skipped. Cross-platform (interface names differ; unknown names sort last).
+pub fn local_links() -> Vec<(String, String)> {
+    let mut out: Vec<(u8, String, String)> = Vec::new();
+    if let Ok(ifs) = local_ip_address::list_afinet_netifas() {
+        for (name, ip) in ifs {
+            let std::net::IpAddr::V4(v4) = ip else {
+                continue;
+            };
+            if v4.is_loopback() || v4.is_link_local() {
+                continue;
+            }
+            let n = name.to_lowercase();
+            if n.starts_with("docker")
+                || n.starts_with("br-")
+                || n.starts_with("veth")
+                || n.starts_with("virbr")
+                || n.contains("vmnet")
+                || n.contains("vbox")
+            {
+                continue;
+            }
+            let (rank, kind) = if n.starts_with("enx")
+                || n.contains("usb")
+                || n.contains("rndis")
+                || n.starts_with("ue")
+            {
+                (0, "usb-tether")
+            } else if n.starts_with("ap") || n.contains("hotspot") {
+                (1, "hotspot")
+            } else if n.starts_with("en") || n.starts_with("eth") || n.contains("ethernet") {
+                (2, "ethernet")
+            } else if n.starts_with("wl")
+                || n.contains("wi-fi")
+                || n.contains("wifi")
+                || n.contains("wlan")
+            {
+                (3, "wifi")
+            } else {
+                (4, "other")
+            };
+            out.push((rank, v4.to_string(), kind.to_string()));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    out.into_iter().map(|(_, ip, k)| (ip, k)).collect()
 }
 
 pub fn hostname() -> String {
