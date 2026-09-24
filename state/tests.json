@@ -35,7 +35,7 @@
       "covers": "gguf parser on real file, planner rules, framing, pairing secrets, llama arg derivation (ngl+1/tensor-split), model name validation, control-plane heartbeat/reconnect over a real socket (tokio), planner device growth",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "36 passed (13 meshcore + 23 meshd) after round-10, test-r10.log 04:42 IST; clippy --all-targets -D warnings clean; credit_tests (7): /proc status parser (+ our own pid), loading run earns nothing, credit = min(placement, held RSS), unrelated memory pressure never credited, stale/override/offline/rejected earn nothing, no plan no credit, planner end to end"
+      "evidence": "38 passed (15 meshcore incl. D027 host-capability tests + 23 meshd) 11:12 IST; clippy clean; cargo check x86_64-pc-windows-gnu clean (in verify)"
     },
     {
       "id": "V005",
@@ -62,7 +62,7 @@
       "covers": "T020 NewApi and manifest rules",
       "last_run": "2026-09-24",
       "status": "PASS",
-      "evidence": "PASS gradle-r11.log 04:52 IST: lint + testDebugUnitTest (19) + assembleDebug"
+      "evidence": "PASS gradle-final.log 11:16 IST (redesigned two-tab app): lint + testDebugUnitTest (19) + assembleDebug; SoC fields guarded for API 31"
     },
     {
       "id": "V008",
