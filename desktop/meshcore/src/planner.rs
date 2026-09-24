@@ -30,6 +30,10 @@ pub struct DeviceCap {
     /// False when the device reported an unsupported tier (e.g. no i8mm on arm64, D015).
     #[serde(default = "default_true")]
     pub supported: bool,
+    /// False for devices that can only be compute workers (a bare `ggml-rpc-server`, e.g. a
+    /// simulated phone): they must never be chosen as the host that runs llama-server.
+    #[serde(default = "default_true")]
+    pub can_host: bool,
 }
 
 fn default_true() -> bool {
@@ -105,6 +109,10 @@ pub enum PlanError {
         usable: u64,
         fixed: u64,
     },
+    #[error("requested host {host} is not eligible: {reason}")]
+    HostNotEligible { host: String, reason: String },
+    #[error("no eligible device can act as host (a compute-only worker cannot run the model)")]
+    NoHost,
 }
 
 fn gb(b: u64) -> String {
@@ -182,13 +190,47 @@ pub fn plan(
     if eligible.is_empty() {
         return Err(PlanError::NoDevices);
     }
+    // A requested host must be eligible and host-capable; never fall back silently to another
+    // device, because the user asked for this one (a capped laptop once made the planner pick a
+    // simulated worker as host, which can never serve).
+    if let Some(want) = policy.prefer_host.as_deref() {
+        match eligible.iter().find(|d| d.device_id == want) {
+            None => {
+                let reason = rejects
+                    .iter()
+                    .find(|p| p.device_id == want)
+                    .map(|p| p.reason.clone())
+                    .unwrap_or_else(|| "unknown or offline device".into());
+                return Err(PlanError::HostNotEligible {
+                    host: want.into(),
+                    reason,
+                });
+            }
+            Some(d) if !d.can_host => {
+                return Err(PlanError::HostNotEligible {
+                    host: want.into(),
+                    reason: "compute-only worker (cannot run llama-server)".into(),
+                })
+            }
+            _ => {}
+        }
+    }
+    if !eligible.iter().any(|d| d.can_host) {
+        return Err(PlanError::NoHost);
+    }
 
     // 2. Single-device if it fits: preferred host first, then measured speed, then the local
     //    device (a tie at 0 tok/s must not ship the model to a phone because its id sorts first).
     let mut single: Vec<&DeviceCap> = eligible
         .iter()
         .copied()
-        .filter(|d| d.usable_bytes >= needed)
+        .filter(|d| d.can_host && d.usable_bytes >= needed)
+        .filter(|d| {
+            policy
+                .prefer_host
+                .as_deref()
+                .is_none_or(|h| h == d.device_id)
+        })
         .collect();
     single.sort_by(|a, b| {
         let pa = policy.prefer_host.as_deref() == Some(&a.device_id);
@@ -242,12 +284,13 @@ pub fn plan(
 
     // 3. Layer split: pick the host, then add devices by usable memory (largest first) until the
     //    pool holds the model. The host must at least hold the non-layer tensors.
-    let host = eligible
+    let hosts: Vec<&DeviceCap> = eligible.iter().copied().filter(|d| d.can_host).collect();
+    let host = hosts
         .iter()
         .copied()
         .find(|d| policy.prefer_host.as_deref() == Some(&d.device_id))
-        .or_else(|| eligible.iter().copied().find(|d| d.is_local))
-        .unwrap_or(eligible[0]);
+        .or_else(|| hosts.iter().copied().find(|d| d.is_local))
+        .unwrap_or(hosts[0]);
     let host_fixed = model.non_layer_bytes;
     if host.usable_bytes <= host_fixed {
         return Err(PlanError::HostTooSmall {
@@ -411,7 +454,66 @@ mod tests {
             charging: true,
             is_local: local,
             supported: true,
+            can_host: true,
         }
+    }
+
+    fn worker_only(id: &str, gb: f64) -> DeviceCap {
+        let mut d = dev(id, gb, false, 1.0);
+        d.can_host = false;
+        d
+    }
+
+    #[test]
+    fn a_compute_only_worker_is_never_the_host() {
+        // Laptop too small to hold the model alone, sim big enough: the sim must NOT become host.
+        let m = model(12, 100, 50);
+        let p = plan(
+            &m,
+            &[dev("local", 0.5, true, 0.0), worker_only("sim", 3.0)],
+            1,
+            &Policy::default(),
+        )
+        .unwrap();
+        assert_eq!(p.host_id, "local");
+        assert_eq!(p.mode, Mode::LayerSplit);
+        // Only worker-only devices online: no host at all.
+        let e = plan(&m, &[worker_only("sim", 3.0)], 1, &Policy::default()).unwrap_err();
+        assert!(matches!(e, PlanError::NoHost));
+    }
+
+    #[test]
+    fn a_requested_host_is_honoured_or_refused_never_swapped() {
+        let m = model(12, 100, 50);
+        let pol = Policy {
+            prefer_host: Some("local".into()),
+            ..Policy::default()
+        };
+        // Fits on the phone alone, but the user asked for the laptop: split with the laptop as host.
+        let p = plan(
+            &m,
+            &[dev("local", 0.5, true, 0.0), dev("phone", 3.0, false, 1.0)],
+            1,
+            &pol,
+        )
+        .unwrap();
+        assert_eq!(p.host_id, "local");
+        // The requested host is rejected (RTT too high): an explicit error, not another host.
+        let bad = Policy {
+            prefer_host: Some("phone".into()),
+            ..Policy::default()
+        };
+        let e = plan(
+            &m,
+            &[
+                dev("local", 3.0, true, 0.0),
+                dev("phone", 3.0, false, 999.0),
+            ],
+            1,
+            &bad,
+        )
+        .unwrap_err();
+        assert!(matches!(e, PlanError::HostNotEligible { .. }), "{e}");
     }
     fn used(p: &Plan) -> Vec<&Placement> {
         p.placements

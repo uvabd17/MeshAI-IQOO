@@ -84,11 +84,106 @@
     hs.innerHTML = `<option value="">auto (fastest that fits)</option>` + S.devices.filter(d => d.online).map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
     if ([...hs.options].some(o => o.value === hcur)) hs.value = hcur;
 
-    renderTopology(); renderStats(); renderDevices(); renderModels(); renderPlan(); renderRuns();
+    renderHero(); renderMesh(); renderTopology(); renderStats(); renderFeed(); renderDevices(); renderModels(); renderPlan(); renderRuns();
     $("#chat-model").textContent = run.status === "ready" ? `${run.model} · ${S.plan ? S.plan.mode : ""}` : "no model running";
     if (S.mirrored) { $("#chat-send").disabled = true; $("#qs-run").disabled = true; $("#qs-plan").disabled = true; $("#stop-btn").hidden = true; }
   }
 
+  // ---- Mesh card: plain-language view of what the mesh is doing right now ----
+  const ICON = {
+    phone: '<svg class="mn-icon" viewBox="0 0 34 34"><rect x="9" y="3" width="16" height="28" rx="3"/><circle class="fill" cx="17" cy="27" r="1.4"/><path d="M14 6h6"/></svg>',
+    laptop: '<svg class="mn-icon" viewBox="0 0 34 34"><rect x="6" y="7" width="22" height="15" rx="2"/><path d="M3 26h28M12 26l1-4h8l1 4"/></svg>',
+    sim: '<svg class="mn-icon" viewBox="0 0 34 34"><rect x="9" y="3" width="16" height="28" rx="3" stroke-dasharray="3 2"/><path d="M14 6h6"/></svg>',
+  };
+  function kindOf(d) { const k = (d.kind || "").toLowerCase(); return k.includes("sim") ? "sim" : k.includes("laptop") ? "laptop" : "phone"; }
+  function nowLine() {
+    const r = S.run, plan = S.plan;
+    const model = r.model || (plan && plan.model) || "";
+    switch (r.status) {
+      case "starting": return [`Planning and sending the plan for ${model}`, "each device is told which layers it will hold"];
+      case "loading": return [`Devices are loading ${model}`, "a phone host first downloads the model from the laptop; workers start their compute process"];
+      case "ready": return [`Serving answers: ${model}`, `OpenAI-compatible endpoint ${r.endpoint || ""} · ready in ${r.ready_ms && r.started_ms ? ((r.ready_ms - r.started_ms) / 1000).toFixed(1) : "?"} s`];
+      case "error": return [`Run stopped: ${r.error || "error"}`, "fix the cause and press Run again"];
+      default: return [S.devices.filter(d => d.online && !d.is_local).length ? "Ready to run — pick a model and press Run" : "Pair a phone (Devices → QR) and press Run to see the model split across devices", ""];
+    }
+  }
+  function deviceStatus(d, p) {
+    const r = S.run; const pr = d.progress; const fresh = pr && (Date.now() - pr.ms) < 120000;
+    if (fresh && pr.job === "download" && pr.fraction < 1) return { text: `Downloading the model from the laptop`, pct: pr.fraction };
+    if (fresh && pr.job === "download" && pr.fraction >= 1 && r.status !== "ready") return { text: "Model downloaded · starting llama.cpp", pct: null };
+    if (!p) return { text: d.online ? "Online · not in this plan" : "Offline", pct: null };
+    if (p.role === "Rejected") return { text: "Not used: " + (p.reason || ""), pct: null };
+    if (p.role === "Host") return { text: r.status === "ready" ? "Runs the model and answers requests" : r.status === "loading" ? "Loading the model into memory" : "Will run the model", pct: null };
+    if (fresh && pr.job === "worker") return { text: `Compute worker ready · ${pr.note || "listening"}`, pct: null };
+    return { text: r.status === "ready" ? "Holding its layers · computing for the host" : "Starting its compute worker", pct: null };
+  }
+  function renderMesh() {
+    const plan = S.plan; const [h, sub] = nowLine();
+    $("#mesh-now").innerHTML = `${esc(h)}${sub ? `<span class="sub">${esc(sub)}</span>` : ""}`;
+    const mm = $("#mesh-model");
+    const mi = plan ? (S.models.find(m => m.file === plan.model) || {}) : {};
+    const info = mi.info || {};
+    mm.innerHTML = plan ? `<span class="mm-name">${esc(info.name || plan.model)}</span><span class="mm-meta">${esc(info.quant_label || "")} · ${info.n_layer || "?"} layers · context ${plan.n_ctx} · needs ${gb(plan.total_needed_bytes)}</span>` : "";
+    mm.style.display = plan ? "" : "none";
+    const nl = info.n_layer || (plan ? Math.max(...plan.placements.map(p => p.layer_end)) : 0);
+    const devs = S.devices.slice().sort((a, b) => (b.online - a.online) || (a.is_local ? -1 : 1));
+    $("#mesh").innerHTML = devs.map(d => {
+      const p = plan ? plan.placements.find(x => x.device_id === d.id) : null;
+      const role = p ? p.role : (d.role === "idle" ? "" : d.role);
+      const used = p && p.role !== "Rejected";
+      const st = deviceStatus(d, p);
+      const n = used ? p.layer_end - p.layer_start : 0;
+      const bar = used && nl ? `<div class="mn-bar"><i style="left:${(p.layer_start / nl * 100).toFixed(1)}%;width:${(n / nl * 100).toFixed(1)}%"></i></div>` : "";
+      const layers = used ? `<div class="mn-layers">layers ${p.layer_start}–${Math.max(p.layer_start, p.layer_end - 1)} · ${n} of ${nl}${p.role === "Host" ? " + embeddings/output" : ""} · ${gb(p.bytes)}</div>` : "";
+      return `<div class="mnode ${used ? (p.role === "Host" ? "host" : "worker") : "unused"} ${d.online ? "" : "offline"}">
+        <div class="mn-top">${ICON[kindOf(d)]}<div><div class="mn-name">${esc(d.name)}</div><div class="mn-role">${esc(used ? (p.role === "Host" ? "host · runs the model" : "compute worker") : (role || "paired · idle"))}</div></div></div>
+        <div class="mn-spec">${esc(specOf(d))}</div>
+        ${coreBars(d)}
+        ${layers}${bar}
+        <div class="mn-status">${esc(st.text)}${st.pct != null ? ` <span class="pct">${Math.round(st.pct * 100)}%</span><div class="pbar"><i style="width:${(st.pct * 100).toFixed(0)}%"></i></div>` : ""}</div>
+      </div>`;
+    }).join("") || '<div class="muted">no devices</div>';
+    $("#mesh-sub").textContent = plan ? plan.summary : `${S.devices.filter(d => d.online).length} device(s) online`;
+  }
+  function coreBars(d) {
+    const tel = d.telemetry || {}; const loads = tel.core_loads || []; const caps = ((d.profile || {}).cores || []).map(c => c.capacity);
+    if (!loads.length) return "";
+    return `<div class="cores" title="each bar = one CPU core, height = current clock / max">${loads.map((l, i) => `<i class="${(caps[i] || 1024) >= 1000 ? "prime" : (caps[i] || 1024) >= 500 ? "big" : "small"}" style="height:${Math.max(6, Math.round(l * 100))}%"></i>`).join("")}</div>`;
+  }
+  function specOf(d) {
+    const pr = d.profile || {}; const tel = d.telemetry || {};
+    const parts = [];
+    if (pr.soc) parts.push(pr.soc.split(" · ")[0]);
+    const cores = (pr.cores || []).filter(c => c.allowed).length; if (cores) parts.push(cores + " cores");
+    if (pr.total_bytes) parts.push(gb(pr.total_bytes) + " RAM");
+    if (pr.os) parts.push(pr.os.split(" (")[0]);
+    if (tel.avail_bytes) parts.push(gb(tel.avail_bytes) + " free");
+    if (d.usable_override_bytes != null) parts.push("capped at " + gb(d.usable_override_bytes));
+    return parts.join(" · ") || "no profile yet";
+  }
+  let LAST_CHAT = null;
+  function renderHero() {
+    const [h, sub] = nowLine();
+    $("#hero-title").textContent = h; $("#hero-sub").textContent = sub || "MeshAI pools a phone's and a laptop's memory over your own link and serves one OpenAI-compatible endpoint.";
+    const r = S.run || {};
+    $("#act-stop").disabled = !r.status || r.status === "idle"; $("#act-run").disabled = !S.models.length;
+    const online = S.devices.filter(d => d.online); const phones = online.filter(d => !d.is_local);
+    const pooled = online.reduce((a, d) => a + (d.usable_bytes || 0), 0);
+    const load = (r.ready_ms && r.started_ms) ? ((r.ready_ms - r.started_ms) / 1000).toFixed(1) : null;
+    $("#kpis").innerHTML = [
+      ["Devices online", `${online.length}<small>${phones.length} phone${phones.length === 1 ? "" : "s"}</small>`, ""],
+      ["Pooled usable memory", gb(pooled), ""],
+      ["Model", r.model ? esc(r.model.replace(/\.gguf$/, "")) : "—", r.status === "ready" ? "accent" : ""],
+      ["Last answer", LAST_CHAT ? `${fmt(LAST_CHAT.tps, 1)}<small>tok/s · ${fmt(LAST_CHAT.ttft, 0)} ms TTFT</small>` : "—", ""],
+      ["Ready in", load ? `${load}<small>s</small>` : "—", ""],
+    ].map(([k, v, cls]) => `<div class="stat ${cls}"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  }
+  function renderFeed() {
+    const r = S.run || {}; const lines = (r.log_tail || []).slice(-40).reverse();
+    const cls = l => /error|failed|✗|exited/i.test(l) ? "err" : /ready|listening|paired|credits|serving/i.test(l) ? "ok" : /download|fetch|push|plan|host:/i.test(l) ? "io" : "";
+    const extra = S.devices.filter(d => d.progress && (Date.now() - d.progress.ms) < 120000).map(d => `<div class="line io"><b></b><span>${esc(d.name)}: ${esc(d.progress.job)} ${Math.round(d.progress.fraction * 100)}% ${esc(d.progress.note || "")}</span></div>`).join("");
+    $("#feed").innerHTML = extra + lines.map(l => `<div class="line ${cls(l)}"><b></b><span>${esc(l.length > 160 ? l.slice(0, 160) + "…" : l)}</span></div>`).join("") || '<div class="muted sm">nothing yet — press Run</div>';
+  }
   function renderTopology() {
     const plan = S.plan;
     const used = plan ? plan.placements.filter(p => p.role !== "Rejected") : [];
@@ -140,6 +235,7 @@
           <span class="k">bench</span><span class="v">${d.bench_tps ? fmt(d.bench_tps, 1) + " tok/s" : "—"}</span>
         </div>
         ${total ? `<div class="meter"><i style="width:${Math.min(100, 100 * (d.usable_bytes || 0) / total)}%"></i></div>` : ""}
+        ${coreBars(d)}
         <div class="row">
           <label class="sm muted">usable cap (GB) <input class="sm" style="width:80px" type="number" step="0.5" value="${d.usable_override_bytes ? (d.usable_override_bytes / 1e9).toFixed(1) : ""}" placeholder="auto" data-limit="${esc(d.id)}"></label>
           ${d.is_local ? `<button class="btn sm ghost" data-bench="${esc(d.id)}">Bench</button>` : `<button class="btn sm ghost" data-forget="${esc(d.id)}">Forget</button>`}
@@ -203,6 +299,10 @@
     } catch (e) { $("#qs-result").textContent = "✗ " + e.message; toast(e.message); }
   };
   $("#stop-btn").onclick = async () => { await api("/api/stop", { method: "POST" }); toast("stopped"); poll(); };
+  $("#act-run").onclick = () => $("#qs-run").click();
+  $("#act-stop").onclick = () => $("#stop-btn").click();
+  $("#act-qr").onclick = () => { show("devices"); $("#offer-btn").click(); };
+  $("#act-chat").onclick = () => show("chat");
   $("#offer-btn").onclick = async () => { try { OFFER = await api("/api/pair/offer", { method: "POST" }); renderDevices(); } catch (e) { toast(e.message); } };
   $("#sim-btn").onclick = async () => { try { const r = await api("/api/sim/workers", { method: "POST", body: JSON.stringify({ n: +$("#sim-n").value, usable_gb: +$("#sim-gb").value, spawn: $("#sim-spawn").checked }) }); toast(`simulated ${$("#sim-n").value} phone(s)${r.spawned_ports.length ? " with live RPC workers on " + r.spawned_ports.join(", ") : ""}`); poll(); } catch (e) { toast(e.message); } };
   $("#dl-btn").onclick = async () => { try { await api("/api/models/download", { method: "POST", body: JSON.stringify({ url: $("#dl-url").value, file: $("#dl-file").value }) }); toast("download started"); poll(); } catch (e) { toast(e.message); } };
@@ -245,6 +345,7 @@
       const res = await streamChat("/v1", null, S.run.model, history, t => { m.innerHTML = renderThink(t); $("#chat").scrollTop = 1e9; });
       history.push({ role: "assistant", content: res.text });
       m.innerHTML = renderThink(res.text) + `<div class="meta">${fmt(res.ttft, 0)} ms TTFT · ${fmt(res.tps, 1)} tok/s · ${res.tokens} tok · ${fmt(res.total / 1000, 1)} s · ${esc(S.run.model)} on ${esc(devName(S.run.host_id))}${S.plan ? " · " + S.plan.mode : ""}</div>`;
+      LAST_CHAT = res;
       $("#s-ttft").innerHTML = fmt(res.ttft, 0) + "<small>ms</small>"; $("#s-tps").innerHTML = fmt(res.tps, 1) + "<small>tok/s</small>"; $("#s-tok").textContent = res.tokens; $("#s-total").innerHTML = fmt(res.total / 1000, 1) + "<small>s</small>";
     } catch (err) { m.textContent = "✗ " + err.message; }
     $("#chat-send").disabled = false;

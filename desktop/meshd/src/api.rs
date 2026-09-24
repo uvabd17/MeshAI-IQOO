@@ -373,8 +373,16 @@ fn file_stream(
 
 /// The pairing offer is returned only here, to the (authenticated, local) admin that will render
 /// the QR. It is never part of `/api/state` (C2).
-async fn api_offer(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let o = st.new_offer(meshcore::CONTROL_PORT);
+#[derive(Deserialize, Default)]
+struct OfferReq {
+    host: Option<String>,
+}
+async fn api_offer(
+    State(st): State<Arc<AppState>>,
+    body: Option<Json<OfferReq>>,
+) -> Json<serde_json::Value> {
+    let host = body.and_then(|Json(r)| r.host);
+    let o = st.new_offer_at(host, meshcore::CONTROL_PORT);
     Json(
         serde_json::json!({"payload": o.qr_payload(), "svg": crate::state::qr_svg(&o.qr_payload()), "host": o.host, "port": o.control_port}),
     )

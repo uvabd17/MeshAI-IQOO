@@ -59,6 +59,7 @@ class MeshService : Service() {
         profiler = Profiler(this)
         runner = LlamaRunner(this)
         client = ControlClient(this, scope, profiler, { lastReceivedPlan.set(if (it.planId == "stop") null else it); plans.send(Queued(it, linkGen.get())) }, ::onLinkLost, { runner.heldBytes() })
+        runner.onDownload = { pct -> val pid = MeshState.currentPlan?.planId ?: ""; if (pct % 5 == 0 || pct == 100) client.notify(envelope { jobProgress = jobProgress { jobId = "download"; fraction = pct / 100f; note = "model"; this.planId = pid } }) }
         runner.onExit = { role, planId, code -> if (code != 0 && (role == "worker" || role == "host")) report(role, false, "$role process exited ($code)", planId) }
         // Actor: one plan at a time, in arrival order. A newer plan (or a stop) cancels and joins the running one
         // before it starts, so a stop can never be queued behind a long model download.
@@ -69,7 +70,7 @@ class MeshService : Service() {
                 planJob = scope.launch { applyPlan(q.plan, q.linkGen) }
             }
         }
-        MeshState.set { it.copy(threads = profiler.workerThreads(), cpusAllowed = profiler.cpusAllowed(), tier = profiler.tier().name.removePrefix("TIER_")) }
+        MeshState.set { it.copy(threads = profiler.workerThreads(), cpusAllowed = profiler.cpusAllowed(), tier = profiler.tier().name.removePrefix("TIER_"), coreCaps = profiler.cores().map { c -> c.second }, socName = "${android.os.Build.SOC_MANUFACTURER} ${android.os.Build.SOC_MODEL}", osName = "Android ${android.os.Build.VERSION.RELEASE}") }
         if (!runner.available) MeshState.log("⚠ llama.cpp binaries missing from this build (jniLibs)")
     }
 
@@ -122,6 +123,8 @@ class MeshService : Service() {
     private suspend fun applyPlan(plan: Plan, gen: Int) {
         MeshState.currentPlan = plan
         val me = plan.placementsList.firstOrNull { it.deviceId == profiler.deviceId }
+        val peers = plan.placementsList.map { p -> MeshPeer(p.displayName.ifEmpty { p.deviceId }, p.kind, p.spec, if (!p.used) "unused" else if (p.isHost) "host" else "worker", p.layerStart, p.layerEnd, p.bytes, p.deviceId == profiler.deviceId, p.reason) }
+        MeshState.set { it.copy(mesh = if (plan.planId == "stop") emptyList() else peers, modelLabel = if (plan.planId == "stop") "" else plan.modelLabel.ifEmpty { plan.modelFile }, nLayer = plan.nLayer, nCtx = plan.nCtx) }
         if (plan.planId == "stop" || me == null || !me.used) {
             runner.stop()
             MeshState.set { it.copy(role = "idle", planSummary = if (plan.planId == "stop") "" else plan.summary, layerStart = 0, layerEnd = 0, modelFile = "") }

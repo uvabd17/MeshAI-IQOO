@@ -43,6 +43,16 @@ class Profiler(private val ctx: Context) {
         khz to cap
     }
 
+    /**
+     * How hard each core is running right now, 0..1 = current clock / max clock (from cpufreq, readable by apps on
+     * most devices; a core that cannot be read reports 0). Cheap enough to sample every 2 s for the dashboard.
+     */
+    fun coreLoads(): List<Float> = (0 until Runtime.getRuntime().availableProcessors()).map { i ->
+        val max = runCatching { File("/sys/devices/system/cpu/cpu$i/cpufreq/cpuinfo_max_freq").readText().trim().toFloat() }.getOrDefault(0f)
+        val cur = runCatching { File("/sys/devices/system/cpu/cpu$i/cpufreq/scaling_cur_freq").readText().trim().toFloat() }.getOrDefault(0f)
+        if (max > 0f) (cur / max).coerceIn(0f, 1f) else 0f
+    }
+
     /** Threads for llama.cpp: big + mid cores (capacity ≥ 500), at least 2. */
     fun workerThreads(): Int = cores().count { it.second >= 500 }.coerceAtLeast(2)
 
@@ -88,7 +98,7 @@ class Profiler(private val ctx: Context) {
         }
     }
 
-    fun telemetry(decodeTps: Float, trimLevel: Int, heldBytes: Long = 0L): Telemetry {
+    fun telemetry(decodeTps: Float, trimLevel: Int, heldBytes: Long = 0L, loads: List<Float> = emptyList()): Telemetry {
         val mi = memInfo()
         val headroom = runCatching { pm.getThermalHeadroom(10) }.getOrDefault(Float.NaN)
         val status = runCatching { pm.currentThermalStatus }.getOrDefault(0)
@@ -99,6 +109,7 @@ class Profiler(private val ctx: Context) {
             deviceId = this@Profiler.deviceId
             availBytes = mi.availMem
             this.heldBytes = heldBytes
+            coreLoads.addAll(loads)
             thermalHeadroom = if (headroom.isNaN()) 0f else headroom
             thermalStatus = status
             batteryPct = level.toFloat()

@@ -236,6 +236,7 @@ macro_rules! bail_if_stale {
 fn push_plan_locked(st: &AppState, id: &str, plan: meshcore::proto::Plan) {
     if let Some(dev) = st.devices.write().unwrap().get_mut(id) {
         dev.worker_ready_plan = None;
+        dev.progress = None;
         dev.has_plan = true;
         dev.last_plan = Some(plan.clone());
     }
@@ -550,19 +551,17 @@ async fn wait_ready(st: Arc<AppState>, gen: u64, endpoint: String) {
     }
 }
 
+/// Cross-platform (Linux, Windows, macOS): ask the process to stop, wait up to 3 s, then kill it.
+/// Uses sysinfo instead of `kill(1)` / `/proc` so the same binary runs on Windows.
 async fn kill_pid_and_wait(pid: u32) {
-    let _ = Command::new("kill").arg(pid.to_string()).output().await;
+    crate::state::signal_process(pid, false);
     for _ in 0..30 {
-        if !Path::new(&format!("/proc/{pid}")).exists() {
+        if !crate::state::process_alive(pid) {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let _ = Command::new("kill")
-        .arg("-9")
-        .arg(pid.to_string())
-        .output()
-        .await;
+    crate::state::signal_process(pid, true);
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 }
 
@@ -635,6 +634,15 @@ pub fn to_proto(
     use meshcore::proto as p;
     let my_ip = local_addr_for(st, for_device);
     let devices = st.devices.read().unwrap();
+    let (n_layer, model_label) = st
+        .model(&plan.model)
+        .map(|m| {
+            (
+                m.info.n_layer,
+                format!("{} · {}", m.info.name, m.info.quant_label),
+            )
+        })
+        .unwrap_or((0, plan.model.clone()));
     p::Plan {
         plan_id: plan_id.to_string(),
         model_name: plan.model.clone(),
@@ -671,6 +679,16 @@ pub fn to_proto(
                         .unwrap_or(meshcore::RPC_PORT as u32),
                     split_weight: x.split_weight,
                     is_host: x.role == Role::Host,
+                    display_name: d.map(|d| d.name.clone()).unwrap_or(x.name.clone()),
+                    kind: d
+                        .map(|d| match d.kind {
+                            crate::state::DeviceKind::Laptop => "laptop",
+                            crate::state::DeviceKind::Phone => "phone",
+                            crate::state::DeviceKind::Sim => "sim",
+                        })
+                        .unwrap_or("phone")
+                        .to_string(),
+                    spec: d.map(|d| d.spec()).unwrap_or_default(),
                 }
             })
             .collect(),
@@ -678,6 +696,8 @@ pub fn to_proto(
         model_file: plan.model.clone(),
         coordinator: format!("{my_ip}:{}", meshcore::API_PORT),
         n_threads: 0,
+        n_layer,
+        model_label,
     }
 }
 

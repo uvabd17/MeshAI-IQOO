@@ -251,11 +251,14 @@ async fn session(
                             }
                         }
                         Some(Body::JobProgress(jp)) => {
-                            if jp.job_id == "worker" {
-                                if let Some(id) = owned_id(st, s) {
-                                    if let Some(d) = st.devices.write().unwrap().get_mut(&id) {
+                            if let Some(id) = owned_id(st, s) {
+                                if let Some(d) = st.devices.write().unwrap().get_mut(&id) {
+                                    if jp.job_id == "worker" {
                                         d.worker_ready_plan = Some(jp.plan_id.clone());
                                     }
+                                    d.progress = Some(crate::state::Progress { job: jp.job_id.clone(), fraction: jp.fraction, note: jp.note.clone(), ms: now_ms() });
+                                }
+                                if jp.job_id == "worker" {
                                     tracing::info!("worker ready: {id} plan {} ({})", jp.plan_id, jp.note);
                                 }
                             }

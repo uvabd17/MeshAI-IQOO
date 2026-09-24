@@ -39,13 +39,28 @@
 
     <!-- OVERVIEW -->
     <section class="view" id="view-overview">
+      <div class="hero">
+        <div>
+          <div class="h-title" id="hero-title">Pair a phone and press Run</div>
+          <div class="h-sub" id="hero-sub">MeshAI pools a phone's and a laptop's memory over your own link and serves one OpenAI-compatible endpoint.</div>
+        </div>
+        <div class="h-actions">
+          <button class="btn lg dark" id="act-run"><i data-i="play"></i>Run</button>
+          <button class="btn lg" id="act-stop"><i data-i="stop"></i>Stop</button>
+          <button class="btn lg" id="act-qr"><i data-i="qr"></i>Pair phone</button>
+          <button class="btn lg" id="act-chat"><i data-i="chat"></i>Chat</button>
+        </div>
+      </div>
+      <div class="kpis" id="kpis"></div>
+      <div class="card mesh-card">
+        <div class="card-h"><h3>The mesh — who holds what</h3><span class="sticker" id="mesh-sub">no plan</span></div>
+        <div id="mesh-now" class="mesh-now">Pair a phone and press Run to see the model split across devices.</div>
+        <div id="mesh-model" class="mesh-model"></div>
+        <div id="mesh" class="mesh"></div>
+      </div>
       <div class="grid2">
         <div class="card">
-          <div class="card-h"><h3>Topology</h3><span class="muted sm" id="topo-sub">no plan</span></div>
-          <div id="topology" class="topology"></div>
-        </div>
-        <div class="card">
-          <div class="card-h"><h3>Quick start</h3></div>
+          <div class="card-h"><h3>Quick start</h3><span class="muted sm">choose, preview, run</span></div>
           <div class="form">
             <label>Model <select id="qs-model"></select></label>
             <label>Context <select id="qs-ctx"><option>2048</option><option selected>4096</option><option>8192</option><option>16384</option></select></label>
@@ -57,9 +72,15 @@
           </div>
           <div id="qs-result" class="plan-mini"></div>
         </div>
+        <div class="card">
+          <div class="card-h"><h3>Topology</h3><span class="muted sm" id="topo-sub">no plan</span></div>
+          <div id="topology" class="topology"></div>
+          <div class="card-h"><h3>Live feed</h3><span class="muted sm">what meshd and the devices report</span></div>
+          <div id="feed" class="feed"></div>
+        </div>
       </div>
       <div class="grid3" id="ov-stats"></div>
-      <div class="card"><div class="card-h"><h3>Host log</h3></div><pre class="log" id="log"></pre></div>
+      <div class="card"><div class="card-h"><h3>Host log (raw)</h3></div><pre class="log" id="log"></pre></div>
     </section>
 
     <!-- DEVICES -->
