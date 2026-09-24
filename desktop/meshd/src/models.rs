@@ -13,17 +13,22 @@ pub struct CatalogEntry {
     pub url: String,
     pub bytes: u64,
     pub layers: u32,
-    pub role: String, // baseline | budget | headline | test | cloud
+    pub role: String, // baseline | budget | headline | test | cloud | vision | projector
     pub note: String,
+    /// Multimodal projector file that must sit next to the model for image input (llama-server --mmproj).
+    #[serde(default)]
+    pub mmproj: Option<String>,
 }
 
 /// The demo set (D012). `bytes` is the model-card size; the download checks the served length.
 pub fn catalog() -> Vec<CatalogEntry> {
     vec![
-        CatalogEntry { id: "qwen3-0.6b".into(), provider: "qwen".into(), name: "Qwen3 0.6B".into(), file: "Qwen3-0.6B-Q8_0.gguf".into(), url: "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf".into(), bytes: 639_446_688, layers: 28, role: "test".into(), note: "Split tests and CI".into() },
-        CatalogEntry { id: "qwen3-8b".into(), provider: "qwen".into(), name: "Qwen3 8B".into(), file: "Qwen3-8B-Q4_K_M.gguf".into(), url: "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf".into(), bytes: 5_027_783_488, layers: 36, role: "baseline".into(), note: "What the laptop can do alone".into() },
-        CatalogEntry { id: "gpt-oss-20b".into(), provider: "openai".into(), name: "gpt-oss 20B".into(), file: "gpt-oss-20b-mxfp4.gguf".into(), url: "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-mxfp4.gguf".into(), bytes: 12_100_000_000, layers: 24, role: "budget".into(), note: "Budget-laptop story: laptop capped to 6 GB needs one phone".into() },
-        CatalogEntry { id: "qwen3-coder-30b-a3b".into(), provider: "qwen".into(), name: "Qwen3 Coder 30B-A3B".into(), file: "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf".into(), url: "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf".into(), bytes: 18_600_000_000, layers: 48, role: "headline".into(), note: "MoE: 30B knowledge, 3.3B active per token. Needs the phones.".into() },
+        CatalogEntry { id: "qwen3-0.6b".into(), provider: "qwen".into(), name: "Qwen3 0.6B".into(), file: "Qwen3-0.6B-Q8_0.gguf".into(), url: "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf".into(), bytes: 639_446_688, layers: 28, role: "test".into(), note: "Split tests and CI".into() , mmproj: None },
+        CatalogEntry { id: "qwen3-8b".into(), provider: "qwen".into(), name: "Qwen3 8B".into(), file: "Qwen3-8B-Q4_K_M.gguf".into(), url: "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf".into(), bytes: 5_027_783_488, layers: 36, role: "baseline".into(), note: "What the laptop can do alone".into() , mmproj: None },
+        CatalogEntry { id: "gpt-oss-20b".into(), provider: "openai".into(), name: "gpt-oss 20B".into(), file: "gpt-oss-20b-mxfp4.gguf".into(), url: "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-mxfp4.gguf".into(), bytes: 12_100_000_000, layers: 24, role: "budget".into(), note: "Budget-laptop story: laptop capped to 6 GB needs one phone".into() , mmproj: None },
+        CatalogEntry { id: "qwen2.5-vl-3b".into(), provider: "qwen".into(), name: "Qwen2.5-VL 3B (sees images)".into(), file: "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf".into(), url: "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf".into(), bytes: 2_100_000_000, layers: 36, role: "vision".into(), note: "Describe photos, read screenshots, charts and documents. Needs its projector file too.".into(), mmproj: Some("mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf".into()) },
+        CatalogEntry { id: "qwen2.5-vl-3b-mmproj".into(), provider: "qwen".into(), name: "Qwen2.5-VL 3B projector".into(), file: "mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf".into(), url: "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf".into(), bytes: 1_400_000_000, layers: 0, role: "projector".into(), note: "The eyes of Qwen2.5-VL: download both.".into(), mmproj: None },
+        CatalogEntry { id: "qwen3-coder-30b-a3b".into(), provider: "qwen".into(), name: "Qwen3 Coder 30B-A3B".into(), file: "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf".into(), url: "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf".into(), bytes: 18_600_000_000, layers: 48, role: "headline".into(), note: "MoE: 30B knowledge, 3.3B active per token. Needs the phones.".into() , mmproj: None },
     ]
 }
 

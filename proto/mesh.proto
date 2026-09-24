@@ -56,6 +56,7 @@ message DeviceProfile {
   Tier     tier          = 8;
   repeated BackendBench backends = 9;
   repeated ModelFile models = 10;  // GGUFs already cached on this device
+  repeated string permissions = 11; // "camera: granted", "notifications: granted", "battery optimisation: exempt", … (dashboards)
 }
 
 message ModelFile { string name = 1; string sha256 = 2; uint64 bytes = 3; string path = 4; }

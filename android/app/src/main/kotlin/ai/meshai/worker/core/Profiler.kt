@@ -53,6 +53,20 @@ class Profiler(private val ctx: Context) {
         if (max > 0f) (cur / max).coerceIn(0f, 1f) else 0f
     }
 
+    /** What the user has allowed, in plain words, for the laptop's Devices page. */
+    fun grantedPermissions(): List<String> {
+        val pm = ctx.packageManager
+        fun granted(p: String) = pm.checkPermission(p, ctx.packageName) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val out = mutableListOf<String>()
+        out += "camera (QR scan): " + if (granted(android.Manifest.permission.CAMERA)) "granted" else "not granted"
+        out += "notifications: " + if (Build.VERSION.SDK_INT < 33 || granted("android.permission.POST_NOTIFICATIONS")) "granted" else "not granted"
+        out += "foreground service (connected device): " + if (granted("android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE")) "granted" else "n/a"
+        out += "battery optimisation: " + if (runCatching { this.pm.isIgnoringBatteryOptimizations(ctx.packageName) }.getOrDefault(false)) "exempt" else "default (may be throttled)"
+        out += "usb debugging: " + if (runCatching { android.provider.Settings.Global.getInt(ctx.contentResolver, android.provider.Settings.Global.ADB_ENABLED, 0) }.getOrDefault(0) == 1) "on" else "off"
+        out += "network: internet + local link"
+        return out
+    }
+
     /** Threads for llama.cpp: big + mid cores (capacity ≥ 500), at least 2. */
     fun workerThreads(): Int = cores().count { it.second >= 500 }.coerceAtLeast(2)
 
@@ -93,6 +107,7 @@ class Profiler(private val ctx: Context) {
             totalBytes = mi.totalMem
             headroomBytes = HEADROOM
             tier = this@Profiler.tier()
+            permissions.addAll(grantedPermissions())
             if (hasOpenCl()) backends.add(ai.meshai.proto.backendBench { backend = Backend.BACKEND_OPENCL })
             backends.add(ai.meshai.proto.backendBench { backend = Backend.BACKEND_CPU })
         }

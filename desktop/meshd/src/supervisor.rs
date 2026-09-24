@@ -140,6 +140,19 @@ pub fn llama_args(st: &AppState, plan: &Plan) -> anyhow::Result<LlamaArgs> {
         &layer_counts,
         &workers,
     );
+    // Vision models: the projector file next to the model enables image input (llama-server --mmproj).
+    let mut args = args;
+    if let Some(mm) = crate::models::catalog()
+        .into_iter()
+        .find(|c| c.file == plan.model)
+        .and_then(|c| c.mmproj)
+    {
+        let p = st.models_dir.join(&mm);
+        if p.exists() {
+            args.push("--mmproj".into());
+            args.push(p.display().to_string());
+        }
+    }
     Ok(LlamaArgs {
         program: st.llama_bin.join("llama-server").display().to_string(),
         args,

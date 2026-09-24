@@ -366,6 +366,16 @@ impl AppState {
             tier: proto::Tier::A as i32,
             backends: vec![],
             models: vec![],
+            permissions: vec![
+                format!("models folder: {}", self.models_dir.display()),
+                "llama.cpp host + RPC worker: available".into(),
+                if self.lan {
+                    "API: open on your link, token required".into()
+                } else {
+                    "API: this laptop only (localhost)".into()
+                },
+                "control plane :7070: paired phones only".into(),
+            ],
         };
         let telemetry = proto::Telemetry {
             device_id: "local".into(),
@@ -418,6 +428,9 @@ impl AppState {
                     continue;
                 }
                 let file = p.file_name().unwrap().to_string_lossy().to_string();
+                if file.starts_with("mmproj-") {
+                    continue; // a vision projector is not a runnable model (paired via the catalog's `mmproj`)
+                }
                 if self
                     .downloads
                     .read()
