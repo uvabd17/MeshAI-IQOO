@@ -70,22 +70,46 @@
   async function pollUsb() { try { USB = await api("/api/usb"); } catch { USB = { adb: false, devices: [] }; } if (page === "devices") renderUsb(); }
 
   /* ---- top bar: what is happening right now ---- */
+  const fmtEta = s => s < 60 ? `${Math.round(s)} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
+  const activeDownload = () => (S.downloads || []).find(d => !d.done && d.total > 0);
+  const readyKey = m => "meshai-ready-" + m;
+  const usualReady = m => { try { const v = +localStorage.getItem(readyKey(m)); return v > 0 ? v : null; } catch { return null; } };
   function nowLine() {
     const r = S.run || {}; const p = phones()[0]; const pr = p && p.progress; const fresh = pr && (Date.now() - pr.ms) < 120000;
     const model = (r.model || (S.plan && S.plan.model) || "").replace(/\.gguf$/, "");
+    const dl = activeDownload();
+    if (dl && r.status !== "ready" && r.status !== "loading") {
+      const secs = Math.max(1, ((S.now_ms || Date.now()) - dl.started_ms) / 1000); const rate = dl.bytes / secs; const left = rate > 0 ? (dl.total - dl.bytes) / rate : null;
+      return [`Downloading ${dl.file.replace(/\.gguf$/, "")}`, `${(dl.bytes / 1e6).toFixed(0)} of ${(dl.total / 1e6).toFixed(0)} MB · ${(rate / 1e6).toFixed(1)} MB/s · ${left != null ? "about " + fmtEta(left) + " left" : ""}`, dl.bytes / dl.total];
+    }
+    if (r.status === "ready" && r.ready_ms && r.started_ms) { try { localStorage.setItem(readyKey(r.model), String(r.ready_ms - r.started_ms)); } catch {} }
+    const elapsed = r.started_ms ? ((S.now_ms || Date.now()) - r.started_ms) / 1000 : 0;
+    const usual = usualReady(r.model || "");
     if (CHATTING) return ["Answering your question", `${model} · ${S.plan ? (S.plan.mode === "Single" ? "on " + devName(S.plan.host_id) : "split across " + S.plan.placements.filter(x => x.role !== "Rejected").length + " devices") : ""}`, null];
-    if (fresh && pr.job === "download" && pr.fraction < 1) return [`Sending ${model} to ${p.name}`, `${Math.round(pr.fraction * 100)} % copied over the link`, pr.fraction];
+    if (fresh && pr.job === "download" && pr.fraction < 1) { const mdl = S.models.find(m => m.file === r.model); const total = mdl ? mdl.info.file_bytes : 0; const done = total * pr.fraction; const rate = r.started_ms ? done / Math.max(1, elapsed) : 0; return [`Sending ${model} to ${p.name}`, `${Math.round(pr.fraction * 100)} % · ${total ? `${(done / 1e6).toFixed(0)} of ${(total / 1e6).toFixed(0)} MB` : ""}${rate > 0 ? ` · ${(rate / 1e6).toFixed(1)} MB/s · about ${fmtEta((total - done) / rate)} left` : ""}`, pr.fraction]; }
     switch (r.status) {
-      case "starting": return [`Planning ${model}`, "deciding which device holds which layers", null];
-      case "loading": return [`Loading ${model} into memory`, S.plan && S.plan.mode !== "Single" ? "the helper starts its compute engine, then the host loads the model" : "the host loads the model", null];
+      case "starting": return [`Planning ${model}`, `deciding which device holds which layers · ${elapsed.toFixed(0)} s`, null];
+      case "loading": return [`Loading ${model} into memory`, `${elapsed.toFixed(0)} s so far${usual ? ` · usually about ${fmtEta(usual / 1000)} for this model` : " · the first time takes longest"} · ${S.plan && S.plan.mode !== "Single" ? "helper starts its engine, then the host loads" : "the host loads the model"}`, usual ? Math.min(0.95, elapsed * 1000 / usual) : null];
       case "ready": return [`Ready: ${model}`, `answers come from ${devName(r.host_id)}${S.plan && S.plan.mode !== "Single" ? " with help from " + S.plan.placements.filter(x => x.role === "Worker").map(x => x.name).join(", ") : ""} · ready in ${r.ready_ms && r.started_ms ? ((r.ready_ms - r.started_ms) / 1000).toFixed(1) : "?"} s`, null];
       case "error": return [`Stopped: ${r.error || "error"}`, "press Run to try again", null];
       default: return phones().length ? ["Devices connected — pick a model and press Run", `${online().length} devices online · ${gb(pooled())} for models`, null] : ["Connect your phone to begin", "USB cable or QR, on the Devices page", null];
     }
   }
+  function deviceChecklist() {
+    const r = S.run || {}; if (!r.status || r.status === "idle") return "";
+    const plan = S.plan; if (!plan) return "";
+    return plan.placements.filter(x => x.role !== "Rejected").map(x => {
+      const d = devById(x.device_id) || {}; const pr = d.progress; const fresh = pr && (Date.now() - pr.ms) < 180000;
+      let state, text;
+      if (x.role === "Host") { state = r.status === "ready" ? "done" : (r.status === "error" ? "" : "busy"); text = r.status === "ready" ? "model loaded, answering" : fresh && pr.job === "download" && pr.fraction < 1 ? `receiving model ${Math.round(pr.fraction * 100)} %` : "loading the model"; }
+      else { const ready = (fresh && pr.job === "worker") || (d.worker_ready_plan && d.worker_ready_plan === r.plan_id); state = ready ? "done" : (r.status === "error" ? "" : "busy"); text = ready ? "helper ready" : "starting its engine"; }
+      return `<span class="${state}"><b></b>${esc(d.name || x.name)}: ${text}</span>`;
+    }).join("");
+  }
   function renderNow() {
     const [h, sub, frac] = nowLine();
     $("#now-title").textContent = h; $("#now-sub").textContent = sub;
+    $("#now-dev").innerHTML = deviceChecklist();
     const bar = $("#now-bar"); bar.hidden = frac == null; if (frac != null) bar.firstElementChild.style.width = (frac * 100).toFixed(0) + "%";
     const r = S.run || {};
     $("#status-pill").className = "status " + (r.status || "idle");
@@ -165,11 +189,26 @@
     if (pooled() >= need) return ["needs laptop + phone", "split"];
     return ["too big for what is free now", "no"];
   }
+  const PROVIDER = { qwen: ["Q", "Qwen (Alibaba)"], openai: ["O", "OpenAI"], google: ["G", "Google"], meta: ["M", "Meta"], mistral: ["Mi", "Mistral"], huggingface: ["HF", "Hugging Face"] };
+  function providerOf(m) { const c = catOf(m.file); if (c && PROVIDER[c.provider]) return PROVIDER[c.provider]; const n = (m.info.name || m.file).toLowerCase(); if (n.includes("qwen")) return PROVIDER.qwen; if (n.includes("gpt") || n.includes("oss")) return PROVIDER.openai; if (n.includes("gemma")) return PROVIDER.google; if (n.includes("llama")) return PROVIDER.meta; if (n.includes("mistral")) return PROVIDER.mistral; return ["M", "model"]; }
+  const paramsOf = m => { const s = (m.info.name || m.file); const a = s.match(/(\d+(?:\.\d+)?)B-A(\d+(?:\.\d+)?)B/i); if (a) return `${a[1]}B total · ${a[2]}B active`; const b = s.match(/(\d+(?:\.\d+)?)\s?B\b/i); return b ? `${b[1]}B parameters` : "—"; };
+  const ktok = n => n >= 1000 ? `${Math.round(n / 1000)}k tokens` : `${n} tokens`;
+  function modelCard(m) {
+    const run = S.run || {}; const [label, cls] = fitLabel(m); const on = m.file === SELECTED; const vis = isVision(m.file); const [mark, prov] = providerOf(m);
+    const arch = (m.info.arch || "").toLowerCase(); const tools = /qwen3|gpt-oss|llama|mistral|gemma/.test(arch) || /qwen3|gpt-oss/i.test(m.info.name || ""); const thinks = /qwen3|gpt-oss/i.test(arch + (m.info.name || ""));
+    const c = catOf(m.file);
+    return `<button class="mc ${on ? "on" : ""} ${cls}" data-model="${esc(m.file)}" title="${esc(c ? c.note : m.file)}">
+      <div class="mc-head"><div class="mc-mark">${esc(mark)}</div><div><div class="mc-name">${esc(m.info.name || m.file)}</div><div class="mc-meta">${esc(prov)}${c && c.role ? " · " + esc(c.role) : ""}</div></div></div>
+      <div class="mc-spec"><b>size</b><span>${paramsOf(m)} · ${esc(m.info.quant_label)} · ${gb(m.info.file_bytes)} file</span><b>shape</b><span>${m.info.n_layer} layers${m.info.n_expert > 1 ? ` · ${m.info.n_expert} experts, ${m.info.n_expert_used} used` : ""}</span><b>memory</b><span>remembers up to ${ktok(m.info.n_ctx_train)} (${(m.info.kv_bytes_per_token / 1024).toFixed(0)} KB per token)</span></div>
+      <div class="mc-io"><i class="yes">text in</i><i class="${vis ? "img" : "no"}">${vis ? "images in" : "no images"}</i><i class="yes">text out</i><i class="${tools ? "yes" : "no"}">${tools ? "tool calls" : "no tools"}</i><i class="${thinks ? "yes" : "no"}">${thinks ? "can think" : "direct"}</i></div>
+      <div class="mc-fit">${label}</div>${run.model === m.file && run.status === "ready" ? `<div class="mc-live">running</div>` : ""}
+    </button>`;
+  }
   function renderModels() {
     const el = $("#model-cards"); const run = S.run || {};
     const runnable = S.models.filter(m => !isProjector(m.file));
     if (!SELECTED && runnable.length) SELECTED = (run.model && runnable.find(m => m.file === run.model)) ? run.model : runnable[0].file;
-    el.innerHTML = runnable.map(m => { const [label, cls] = fitLabel(m); const on = m.file === SELECTED; const vis = isVision(m.file); return `<button class="mc ${on ? "on" : ""} ${cls}" data-model="${esc(m.file)}"><div class="mc-name">${esc(m.info.name || m.file)}</div><div class="mc-meta">${esc(m.info.quant_label)} · ${gb(m.info.file_bytes)} · ${m.info.n_layer} layers${vis ? " · sees images" : ""}</div><div class="mc-fit">${label}</div>${run.model === m.file && run.status === "ready" ? `<div class="mc-live">running</div>` : ""}</button>`; }).join("") || `<div class="muted">No model files yet — turn on Advanced to download one.</div>`;
+    el.innerHTML = runnable.map(modelCard).join("") || `<div class="muted">No model files yet — turn on Advanced to download one.</div>`;
     $$("[data-model]", el).forEach(b => b.onclick = () => { SELECTED = b.dataset.model; renderModels(); preview(); });
     const hs = $("#qs-host"); const hcur = hs.value;
     hs.innerHTML = `<option value="">auto</option>` + online().filter(d => kindOf(d) !== "sim").map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
