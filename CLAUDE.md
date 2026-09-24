@@ -1,6 +1,6 @@
 # MeshAI — project instructions
 
-Pool a phone's and a laptop's memory over a private link to run GGUF models neither can run alone, behind one local OpenAI-compatible endpoint. Team Maynards (Prajwal, Yuvaraj). Design of record: `docs/ARCHITECTURE-v3-native-mesh.md`. Read `state/progress.md` before starting work.
+Pool a phone's and a laptop's memory over a private link to run GGUF models neither can run alone, behind one local OpenAI-compatible endpoint. Team Maynards (Prajwal, Yuvaraj). Design of record: `docs/MESHAI.md (§10 design)`. Read `state/progress.md` before starting work.
 
 ## Non-negotiables
 - **Claims discipline.** Every number is *measured* (with model, quant, context, backend, link) or marked *target*/*estimate*. Never write a benchmark number you did not run.
@@ -22,18 +22,18 @@ Pool a phone's and a laptop's memory over a private link to run GGUF models neit
 ## Definition of done (a task is DONE only when all hold)
 1. Code compiles and `scripts/verify --quick` passes.
 2. Behaviour was **executed**, not inferred: a test, a script run, an `adb` session, or a screenshot — and the evidence is in the report.
-3. Measured numbers, if any, are appended to `docs/BENCHMARKS.md` with full conditions.
-4. Any decision made is in `docs/DECISIONS.md`; any unknown found is in `docs/RESEARCH.md` or `state/blockers.md`.
+3. Measured numbers, if any, are appended to `docs/MESHAI.md (§12 benchmarks)` with full conditions.
+4. Any decision made is in `docs/MESHAI.md (§11 decisions)`; any unknown found is in `docs/MESHAI.md (§16 research)` or `state/blockers.md`.
 5. `state/tasks.json` and `state/progress.md` are updated.
 6. Independent review by the `reviewer` agent for anything touching pairing, scheduler rules, memory headroom, or the public API.
 
 ## Persistent state (survives context loss — keep it current)
-`state/progress.md` (what happened, what's next) · `state/tasks.json` (task graph with status) · `state/tests.json` (what verification exists and its last result) · `state/blockers.md` · `docs/DECISIONS.md` · `docs/RESEARCH.md`.
+`state/progress.md` (what happened, what's next) · `state/tasks.json` (task graph with status) · `state/tests.json` (what verification exists and its last result) · `state/blockers.md` · `docs/MESHAI.md (§11 decisions)` · `docs/MESHAI.md (§16 research)`.
 
 ## Delegation
 Builder ≠ approver. Use these subagents (`.claude/agents/`):
 - `researcher` — any technology/upstream question before deciding. Read-only. Follows `/research-protocol`.
-- `architect` — options + tradeoffs for a design decision. Read-only; the decision is recorded by the main thread in `docs/DECISIONS.md`.
+- `architect` — options + tradeoffs for a design decision. Read-only; the decision is recorded by the main thread in `docs/MESHAI.md (§11 decisions)`.
 - `engineer` — implementation of one scoped task. Runs verify before reporting.
 - `verifier` — independent execution of tests/scripts/device runs; reports evidence, never edits source.
 - `reviewer` — completion audit against the Definition of Done. Read-only. PASS/FAIL.

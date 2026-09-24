@@ -1,6 +1,6 @@
 //! Placement planner.
 //!
-//! Rules (in order; see team notes §04 and docs/ARCHITECTURE-v3 §7):
+//! Rules (in order; see team notes §04 and docs/MESHAI.md §10):
 //! 1. If the model + KV fits on one eligible device, run it there — the fastest one. No network.
 //! 2. Otherwise split contiguous layer blocks across the fewest devices whose pooled free memory
 //!    holds the model. Each chosen device is filled with as many consecutive layers as it can

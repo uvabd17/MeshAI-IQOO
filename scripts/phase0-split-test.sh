@@ -58,5 +58,5 @@ echo "== C. split: laptop + phone over RPC (llama-bench with --rpc) =="
 "$HOST_BIN/llama-bench" -m "$MODEL" -p 512 -n 128 --rpc "$PHONE_IP:$PORT" || true
 
 echo
-echo "Record TTFT / prompt tok/s / decode tok/s for A, B, C plus RTT in docs/benchmarks.md."
+echo "Record TTFT / prompt tok/s / decode tok/s for A, B, C plus RTT in docs/MESHAI.md (§12 benchmarks)."
 echo "Stop the worker with:  adb shell pkill ggml-rpc-server"

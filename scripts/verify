@@ -56,8 +56,11 @@ fi
 
 # android (full mode only: a Gradle run takes minutes and must not sit inside the Stop hook)
 # Windows portability: type-check meshd for the x86_64-pc-windows-gnu target when it is installed (D028).
+# Since the TLS fix (reqwest rustls-tls → ring) the check also needs the mingw-w64 C compiler.
 if command -v rustup >/dev/null && rustup target list --installed 2>/dev/null | grep -q x86_64-pc-windows-gnu; then
-  (cd desktop && cargo check --quiet --target x86_64-pc-windows-gnu >/dev/null 2>&1) && ok "cargo check (windows target)" || bad "cargo check (windows target)"
+  if command -v x86_64-w64-mingw32-gcc >/dev/null; then
+    (cd desktop && cargo check --quiet --target x86_64-pc-windows-gnu >/dev/null 2>&1) && ok "cargo check (windows target)" || bad "cargo check (windows target)"
+  else skip "cargo check (windows target): x86_64-w64-mingw32-gcc not installed (apt install mingw-w64; ring needs it)"; fi
 else skip "cargo check (windows target): rustup target x86_64-pc-windows-gnu not installed"; fi
 if [[ -f android/gradlew ]]; then
   if [[ $QUICK == 1 ]]; then skip "gradle (quick mode; run scripts/verify for lint+test+assembleDebug)"

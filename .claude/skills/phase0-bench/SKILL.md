@@ -1,6 +1,6 @@
 ---
 name: phase0-bench
-description: Run the Phase 0 hardware-truth measurements (phone alone, laptop alone, laptop+phone split over llama.cpp RPC; RTT; thermal over 10 min) and record them in docs/BENCHMARKS.md with full conditions. Use when a physical arm64 phone is attached and a small GGUF is available.
+description: Run the Phase 0 hardware-truth measurements (phone alone, laptop alone, laptop+phone split over llama.cpp RPC; RTT; thermal over 10 min) and record them in docs/MESHAI.md (§12 benchmarks) with full conditions. Use when a physical arm64 phone is attached and a small GGUF is available.
 argument-hint: "[model.gguf] [phone_ip]"
 allowed-tools: Bash(scripts/*), Bash(adb *), Bash(ping *)
 ---
@@ -24,6 +24,6 @@ Then run `scripts/phase0-split-test.sh $0 $1` and capture:
 | D | 10-minute sustained (`llama-bench -r 20` or looped) | thermal headroom curve (`dumpsys thermalservice`), `dumpsys battery` current, t/s at minute 1/5/10 |
 | E | kill threshold | grow `-c` context until Android kills the worker; record last surviving ctx and MemAvailable |
 
-Write every row into `docs/BENCHMARKS.md` with: date, phone model + SoC + RAM, Android version, laptop, llama.cpp commit, model + quant + file size, context, threads, backend, link type, and the raw command. A number without conditions is not a result.
+Write every row into `docs/MESHAI.md (§12 benchmarks)` with: date, phone model + SoC + RAM, Android version, laptop, llama.cpp commit, model + quant + file size, context, threads, backend, link type, and the raw command. A number without conditions is not a result.
 
 Finally: update `state/tasks.json` (T003–T006) and `state/progress.md`, and state whether the **gate** passed: split works, output correct, decode ≥ 3 tok/s on a model that does not fit one device.

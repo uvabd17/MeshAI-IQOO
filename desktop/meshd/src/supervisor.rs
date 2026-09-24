@@ -2,7 +2,7 @@
 //! local `ggml-rpc-server` (laptop-as-worker for a phone host) and simulated-phone workers.
 //!
 //! llama.cpp semantics the args depend on (verified against `load_tensors: layer N assigned to
-//! device` debug output on 2026-09-24, see docs/BENCHMARKS.md):
+//! device` debug output on 2026-09-24, see docs/MESHAI.md §12):
 //! * `--rpc a:p,b:p` registers remote devices, in that order, ahead of the CPU;
 //! * llama.cpp counts the output head as layer `n_layer`, so `-ngl N` offloads the last N of
 //!   (n_layer + 1) entries. We pass `ngl + 1` so exactly `ngl` real layers move, and pin

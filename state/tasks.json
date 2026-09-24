@@ -80,7 +80,7 @@
       "blocked_by": [
         "T008"
       ],
-      "evidence": "2026-09-24: laptop host + 2 local RPC workers, Qwen3-0.6B: llama-bench pp 57-71 / tg 9.6-12.4 t/s; via meshd+/v1 chat: TTFT 2.9 s, 4.8 tok/s (loaded machine). docs/BENCHMARKS.md"
+      "evidence": "2026-09-24: laptop host + 2 local RPC workers, Qwen3-0.6B: llama-bench pp 57-71 / tg 9.6-12.4 t/s; via meshd+/v1 chat: TTFT 2.9 s, 4.8 tok/s (loaded machine). docs/MESHAI.md (§12 benchmarks)"
     },
     {
       "id": "T010",
@@ -192,7 +192,7 @@
         "T031",
         "T013"
       ],
-      "evidence": "laptop-only and simulated-mesh chats measured (docs/BENCHMARKS.md); cloud reference needs an API key; real-phone rows pending"
+      "evidence": "laptop-only and simulated-mesh chats measured (docs/MESHAI.md (§12 benchmarks)); cloud reference needs an API key; real-phone rows pending"
     },
     {
       "id": "T040",

@@ -1,6 +1,6 @@
 # android/ — MeshAI worker (Phase 1)
 
-Kotlin + Jetpack Compose. minSdk 30, arm64-v8a only. See `docs/ARCHITECTURE-v3-native-mesh.md` §2.3–§3.
+Kotlin + Jetpack Compose. minSdk 30, arm64-v8a only. See `docs/MESHAI.md` §10.
 
 Native pieces to be placed here:
 - `libllama.so` / `libggml*.so` built by `scripts/android-build-llama.sh` (+ `libggml-opencl.so` for Tier A/S).

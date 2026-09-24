@@ -3,7 +3,7 @@
   Fetch llama.cpp Windows binaries (built with GGML_RPC=ON) into third_party\llama.cpp\build-host\bin,
   and optionally the demo models into the MeshAI models directory.
 .PARAMETER Tag
-  llama.cpp release tag to download (default: the tag matching the commit pinned in docs/RESEARCH.md).
+  llama.cpp release tag to download (default: the tag matching the commit pinned in docs/MESHAI.md (§16 research)).
 .PARAMETER Models
   Also download the small test model (Qwen3-0.6B Q8_0) into %LOCALAPPDATA%\MeshAI\models.
 #>

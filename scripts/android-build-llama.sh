@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cross-compile llama.cpp (ggml-rpc-server, llama-server, llama-bench, llama-cli)
-# for Android arm64 with the NDK. Phase 0 step 1 — see docs/ARCHITECTURE-v3-native-mesh.md §8.
+# for Android arm64 with the NDK. Phase 0 step 1 — see docs/MESHAI.md (§10 design) §8.
 #
 # Usage:
 #   scripts/android-build-llama.sh                 # CPU build (dotprod + i8mm)
