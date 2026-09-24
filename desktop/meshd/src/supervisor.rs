@@ -327,6 +327,7 @@ async fn bring_up(
     gen: u64,
     la: LlamaArgs,
 ) -> anyhow::Result<()> {
+    let mut la = la;
     // Local worker (laptop as compute for a phone host): bind to our end of the host's link.
     if plan
         .placements
@@ -402,6 +403,11 @@ async fn bring_up(
         } else {
             anyhow::bail!("device {id} never reported its RPC worker listening (45 s) — is the app in the foreground?");
         }
+    }
+    // Workers may have reported a different port than planned (Android reserves port ranges at
+    // runtime); rebuild the llama-server arguments from what the devices actually listen on.
+    if !remote_workers.is_empty() {
+        la = llama_args(&st, &plan)?;
     }
     // llama.cpp aborts the whole process if an RPC server is unreachable, so TCP-check every worker.
     for (addr, port) in &la.workers {

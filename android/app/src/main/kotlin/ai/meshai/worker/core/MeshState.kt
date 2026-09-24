@@ -54,7 +54,7 @@ data class UiState(
 
 object MeshState {
     val ui = MutableStateFlow(UiState())
-    fun log(line: String) = ui.update { it.copy(log = (it.log + line).takeLast(80)) }
+    fun log(line: String) { android.util.Log.i("MeshAI", line); ui.update { it.copy(log = (it.log + line).takeLast(80)) } }
     fun set(f: (UiState) -> UiState) = ui.update(f)
     @Volatile var currentPlan: Plan? = null
 }

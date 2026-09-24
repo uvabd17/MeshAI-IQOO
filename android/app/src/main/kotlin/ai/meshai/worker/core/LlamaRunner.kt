@@ -25,6 +25,8 @@ class LlamaRunner(private val ctx: Context) {
     var onDownload: ((pct: Int) -> Unit)? = null
     enum class Start { STARTED, REFUSED, FAILED }
     val currentRole: String get() = gate.currentRole
+    /** True while our child process is alive. */
+    val isRunning: Boolean get() = proc?.let { p -> runCatching { p.isAlive }.getOrDefault(false) } ?: false
     val currentPlanId: String get() = gate.currentPlanId
     // Finite read timeout: a stalled model stream must not block the cancellable loop forever.
     private val http = OkHttpClient.Builder().readTimeout(60, TimeUnit.SECONDS).build()

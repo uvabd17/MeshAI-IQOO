@@ -9,7 +9,7 @@ cd "$(dirname "$0")/../.."
 OUT="${OUT:-state/.cache/qa}"; mkdir -p "$OUT"
 MODEL="${MODEL:-Qwen3-0.6B-Q8_0.gguf}"
 BROWSER_MJS="${BROWSER_MJS:-$HOME/.claude/skills/browser-automation/browser.mjs}"
-api() { curl -s -m 20 -H 'content-type: application/json' "$@"; }
+api() { curl -s -m 20 -H "x-mesh-token: ${MESH_TOKEN:-}" -H 'content-type: application/json' "$@"; }
 status() { api localhost:8080/api/state | jq -r .run.status; }
 wait_settled() { for i in $(seq 1 120); do s=$(status); [[ "$s" == "ready" || "$s" == "error" || "$s" == "idle" ]] && break; sleep 0.5; done; echo "$s"; }
 fail=0; check() { if [[ "$1" == "$2" ]]; then echo "  ok   $3"; else echo "  FAIL $3 (got '$1', want '$2')"; fail=1; fi; }
@@ -17,22 +17,22 @@ fail=0; check() { if [[ "$1" == "$2" ]]; then echo "  ok   $3"; else echo "  FAI
 echo "== split-sim =="; scripts/split-sim.sh "$MODEL" > "$OUT/split-sim.log" 2>&1; check "$?" 0 "split-sim exit"; grep -E "status=|tps=" "$OUT/split-sim.log" | tail -3
 echo "== stop-race =="; scripts/qa/stop-race.sh
 echo "== 416 carries Content-Range */len =="
-LEN=$(curl -sI -m 10 "localhost:8080/api/models/file/$MODEL" | tr -d '\r' | awk 'tolower($1)=="content-length:"{print $2}')
-HDR=$(curl -s -o /dev/null -D - -H "Range: bytes=$LEN-" "localhost:8080/api/models/file/$MODEL" | tr -d '\r')
+LEN=$(curl -sI -m 10 -H "x-mesh-token: ${MESH_TOKEN:-}" "localhost:8080/api/models/file/$MODEL" | tr -d '\r' | awk 'tolower($1)=="content-length:"{print $2}')
+HDR=$(curl -s -o /dev/null -D - -H "x-mesh-token: ${MESH_TOKEN:-}" -H "Range: bytes=$LEN-" "localhost:8080/api/models/file/$MODEL" | tr -d '\r')
 check "$(echo "$HDR" | grep -ci "^content-range: bytes \*/$LEN")" 1 "416 content-range bytes */$LEN"
 echo "== refused requests must leave the live run alone =="
 api -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":2048}" >/dev/null; check "$(wait_settled)" ready "baseline run ready"
 SIM=$(api localhost:8080/api/state | jq -r '[.devices[] | select(.is_local|not) | .id][0]')
-code=$(curl -s -o "$OUT/refused.json" -w '%{http_code}' -m 20 -H 'content-type: application/json' -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":2048,\"host\":\"$SIM\"}")
+code=$(curl -s -o "$OUT/refused.json" -w "%{http_code}" -m 20 -H "x-mesh-token: ${MESH_TOKEN:-}" -H "content-type: application/json" -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":2048,\"host\":\"$SIM\"}")
 check "$code" 422 "phone host without --lan → 422"; check "$(status)" ready "run still ready after the --lan refusal"
-code=$(curl -s -o "$OUT/refused2.json" -w '%{http_code}' -m 20 -H 'content-type: application/json' -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":4000000}")
+code=$(curl -s -o "$OUT/refused2.json" -w "%{http_code}" -m 20 -H "x-mesh-token: ${MESH_TOKEN:-}" -H "content-type: application/json" -X POST localhost:8080/api/run -d "{\"model\":\"$MODEL\",\"n_ctx\":4000000}")
 check "$code" 422 "n_ctx beyond n_ctx_train → 422 ($(jq -r .error "$OUT/refused2.json" | cut -c1-60))"; check "$(status)" ready "run still ready after the n_ctx refusal"
-code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 -H 'content-type: application/json' -X POST localhost:8080/api/run -d '{"model":"no-such.gguf","n_ctx":2048}')
+code=$(curl -s -o /dev/null -w "%{http_code}" -m 20 -H "x-mesh-token: ${MESH_TOKEN:-}" -H "content-type: application/json" -X POST localhost:8080/api/run -d '{"model":"no-such.gguf","n_ctx":2048}')
 check "$code" 422 "unknown model → 422"; check "$(status)" ready "run still ready after the unknown-model refusal"
 BIG="${BIG_MODEL:-Qwen3-8B-Q4_K_M.gguf}"
 PID_BEFORE=$(api localhost:8080/api/state | jq -r '.run.plan_id'); check "$([[ "$PID_BEFORE" != null ]] && echo live)" live "a run is live before the shortfall request"
 if api localhost:8080/api/state | jq -e --arg m "$BIG" '.models[] | select(.file==$m)' >/dev/null; then
-  code=$(curl -s -o "$OUT/refused3.json" -w '%{http_code}' -m 20 -H 'content-type: application/json' -X POST localhost:8080/api/run -d "{\"model\":\"$BIG\",\"n_ctx\":2048}")
+  code=$(curl -s -o "$OUT/refused3.json" -w "%{http_code}" -m 20 -H "x-mesh-token: ${MESH_TOKEN:-}" -H "content-type: application/json" -X POST localhost:8080/api/run -d "{\"model\":\"$BIG\",\"n_ctx\":2048}")
   check "$code" 422 "shortfall no stop could cure ($BIG on the capped pool) → 422"
   check "$(api localhost:8080/api/state | jq -r '.run.plan_id')" "$PID_BEFORE" "…refused WITHOUT stopping the live run (plan_id unchanged)"
   check "$(status)" ready "run still ready after the shortfall refusal"

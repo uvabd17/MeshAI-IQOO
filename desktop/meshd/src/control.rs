@@ -259,6 +259,11 @@ async fn session(
                                 if let Some(d) = st.devices.write().unwrap().get_mut(&id) {
                                     if jp.job_id == "worker" {
                                         d.worker_ready_plan = Some(jp.plan_id.clone());
+                                        // "listening:host:port" — the phone may have had to pick another port
+                                        // (Android reserves port ranges at runtime); trust the report.
+                                        if let Some(port) = jp.note.strip_prefix("listening:").and_then(|s| s.rsplit(':').next()).and_then(|p| p.parse::<u16>().ok()) {
+                                            if port != d.rpc_port { tracing::info!("{id}: worker on port {port} (planned {})", d.rpc_port); d.rpc_port = port; }
+                                        }
                                     }
                                     d.progress = Some(crate::state::Progress { job: jp.job_id.clone(), fraction: jp.fraction, note: jp.note.clone(), ms: now_ms() });
                                 }

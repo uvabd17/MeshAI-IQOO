@@ -161,28 +161,37 @@ class MeshService : Service() {
         } else {
             MeshState.set { it.copy(role = "worker") }
             updateNotification("Worker: layers ${me.layerStart}–${me.layerEnd - 1}")
-            val port = me.rpcPort.takeIf { it > 0 } ?: 50052
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            when (runner.startWorker(bind, port, threads, plan.planId)) {
-                LlamaRunner.Start.STARTED -> reportListening(bind, port, plan.planId) // child of planJob: cancelled with it (round-5 #3)
-                LlamaRunner.Start.FAILED -> report("worker", false, "could not start the RPC worker", plan.planId)
-                LlamaRunner.Start.REFUSED -> {} // stopped or link lost meanwhile: nothing to report
+            // Android reserves ranges of ports at runtime (ip_local_reserved_ports; on the POCO F5 it swallowed
+            // 50048–50061 mid-session), so try the planned port first and then a spread of fallbacks; the
+            // laptop learns the real port from the "listening:host:port" report.
+            val wanted = me.rpcPort.takeIf { it > 0 } ?: 50052
+            val candidates = (listOf(wanted) + RPC_PORT_FALLBACKS).distinct()
+            var started = false
+            for (port in candidates) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                when (runner.startWorker(bind, port, threads, plan.planId)) {
+                    LlamaRunner.Start.STARTED -> {
+                        if (waitListening(bind, port)) { started = true; MeshState.log("worker listening on $bind:$port"); MeshState.set { it.copy(workerReady = true) }
+                            client.notify(envelope { jobProgress = jobProgress { jobId = "worker"; fraction = 1f; note = "listening:$bind:$port"; this.planId = plan.planId } }); break }
+                        MeshState.log("✗ port $port unusable on this phone (reserved or busy), trying the next")
+                    }
+                    LlamaRunner.Start.FAILED -> { report("worker", false, "could not start the RPC worker", plan.planId); return }
+                    LlamaRunner.Start.REFUSED -> return // stopped or link lost meanwhile: nothing to report
+                }
             }
+            if (!started) report("worker", false, "no usable port for the RPC worker (tried ${candidates.joinToString()})", plan.planId)
         }
     }
 
-    /** Poll our own RPC port until it accepts, then tell the coordinator (with the plan id, M2). */
-    private suspend fun reportListening(host: String, port: Int, planId: String) {
-        repeat(60) {
+    /** Poll our own RPC port until it accepts (≤ 6 s); false if the process died or never listened. */
+    private suspend fun waitListening(host: String, port: Int): Boolean {
+        repeat(12) {
             val ok = runCatching { Socket().use { it.connect(InetSocketAddress(host, port), 500) }; true }.getOrDefault(false)
-            if (ok) {
-                client.notify(envelope { jobProgress = jobProgress { jobId = "worker"; fraction = 1f; note = "listening:$host:$port"; this.planId = planId } })
-                MeshState.log("worker listening on $host:$port"); MeshState.set { it.copy(workerReady = true) }
-                return
-            }
+            if (ok) return true
+            if (!runner.isRunning) return false
             kotlinx.coroutines.delay(500)
         }
-        MeshState.log("✗ worker did not start listening on $host:$port")
+        return false
     }
 
     private fun acquireLocks() {
@@ -205,6 +214,8 @@ class MeshService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        /** Fallback RPC ports, spread out so a reserved range never swallows them all. */
+        val RPC_PORT_FALLBACKS = listOf(50062, 50070, 50080, 50100, 50200, 51000)
         const val ACTION_JOIN = "ai.meshai.JOIN"
         const val ACTION_LEAVE = "ai.meshai.LEAVE"
         const val ACTION_STOP_PROCESS = "ai.meshai.STOP_PROCESS"

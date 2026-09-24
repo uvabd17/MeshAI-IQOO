@@ -487,23 +487,50 @@ async fn api_usb_pair(State(st): State<Arc<AppState>>, Json(r): Json<UsbPairReq>
         )
             .into_response();
     }
-    let steps: [&[&str]; 4] = [
-        &["-s", &s, "reverse", "tcp:7070", "tcp:7070"],
-        &["-s", &s, "reverse", "tcp:8080", "tcp:8080"],
-        &["-s", &s, "forward", "tcp:50052", "tcp:50052"],
-        &[
-            "-s",
-            &s,
-            "shell",
-            "pm",
-            "list",
-            "packages",
-            "ai.meshai.worker",
+    // Forward every port the phone may pick for its RPC worker (it falls back when Android has
+    // reserved the planned one at runtime), plus the control plane and API in reverse.
+    let ports = [
+        "50052", "50062", "50070", "50080", "50100", "50200", "51000",
+    ];
+    let mut steps: Vec<Vec<String>> = vec![
+        vec![
+            "-s".into(),
+            s.clone(),
+            "reverse".into(),
+            "tcp:7070".into(),
+            "tcp:7070".into(),
+        ],
+        vec![
+            "-s".into(),
+            s.clone(),
+            "reverse".into(),
+            "tcp:8080".into(),
+            "tcp:8080".into(),
         ],
     ];
+    for p in ports {
+        steps.push(vec![
+            "-s".into(),
+            s.clone(),
+            "forward".into(),
+            format!("tcp:{p}"),
+            format!("tcp:{p}"),
+        ]);
+    }
+    steps.push(vec![
+        "-s".into(),
+        s.clone(),
+        "shell".into(),
+        "pm".into(),
+        "list".into(),
+        "packages".into(),
+        "ai.meshai.worker".into(),
+    ]);
+    let last = steps.len() - 1;
     for (i, args) in steps.iter().enumerate() {
-        match adb(args).await {
-            Ok(out) if i == 3 && !out.contains("ai.meshai.worker") => {
+        let argv: Vec<&str> = args.iter().map(|a| a.as_str()).collect();
+        match adb(&argv).await {
+            Ok(out) if i == last && !out.contains("ai.meshai.worker") => {
                 return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"error": "MeshAI app is not installed on that phone — install android/app/build/outputs/apk/debug/app-debug.apk first"}))).into_response();
             }
             Ok(_) => {}
