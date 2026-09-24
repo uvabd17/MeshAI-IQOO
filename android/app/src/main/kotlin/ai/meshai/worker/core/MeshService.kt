@@ -70,7 +70,7 @@ class MeshService : Service() {
                 planJob = scope.launch { applyPlan(q.plan, q.linkGen) }
             }
         }
-        MeshState.set { it.copy(threads = profiler.workerThreads(), cpusAllowed = profiler.cpusAllowed(), tier = profiler.tier().name.removePrefix("TIER_"), coreCaps = profiler.cores().map { c -> c.second }, socName = "${android.os.Build.SOC_MANUFACTURER} ${android.os.Build.SOC_MODEL}", osName = "Android ${android.os.Build.VERSION.RELEASE}") }
+        MeshState.set { it.copy(threads = profiler.workerThreads(), cpusAllowed = profiler.cpusAllowed(), tier = profiler.tier().name.removePrefix("TIER_"), coreCaps = profiler.cores().map { c -> c.second }, socName = if (android.os.Build.VERSION.SDK_INT >= 31) "${android.os.Build.SOC_MANUFACTURER} ${android.os.Build.SOC_MODEL}" else android.os.Build.HARDWARE, osName = "Android ${android.os.Build.VERSION.RELEASE}") }
         if (!runner.available) MeshState.log("⚠ llama.cpp binaries missing from this build (jniLibs)")
     }
 
