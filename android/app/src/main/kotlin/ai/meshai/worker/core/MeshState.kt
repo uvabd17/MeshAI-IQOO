@@ -4,6 +4,9 @@ import ai.meshai.proto.Plan
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 
+/** One device in the current plan, as the phone shows it (mirrors meshd's Mesh card). */
+data class MeshPeer(val name: String, val kind: String, val spec: String, val role: String, val layerStart: Int, val layerEnd: Int, val bytes: Long, val isMe: Boolean, val reason: String)
+
 data class UiState(
     val paired: Boolean = false,
     val connected: Boolean = false,
@@ -32,6 +35,18 @@ data class UiState(
     val lastError: String? = null,
     /** A pairing payload that arrived from another app / adb and awaits the user's confirmation (M9). */
     val pendingJoin: PairingPayload? = null,
+    /** Plain-language mesh view: model label, layer count and every device's share. */
+    val modelLabel: String = "",
+    val nLayer: Int = 0,
+    val nCtx: Int = 0,
+    val mesh: List<MeshPeer> = emptyList(),
+    /** Per-core clock as a fraction of max (visual "cores at work"), and the capacity class of each core. */
+    val coreLoads: List<Float> = emptyList(),
+    val coreCaps: List<Int> = emptyList(),
+    /** Last ~40 link RTT p50 samples for the sparkline. */
+    val rttHistory: List<Float> = emptyList(),
+    val socName: String = "",
+    val osName: String = "",
 )
 
 object MeshState {

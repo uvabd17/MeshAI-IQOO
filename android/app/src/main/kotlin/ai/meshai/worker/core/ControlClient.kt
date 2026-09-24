@@ -89,8 +89,9 @@ class ControlClient(
                         val tele = launch {
                             while (isActive) {
                                 profiler.sampleRtt(p.host, p.controlPort)
-                                val t = profiler.telemetry(if (decodeTps > 0f) decodeTps else MeshState.ui.value.decodeTps, trimLevel, heldBytes())
-                                MeshState.set { it.copy(availBytes = t.availBytes, thermalHeadroom = t.thermalHeadroom, thermalStatus = t.thermalStatus, batteryPct = t.batteryPct.toInt(), charging = t.charging, rttP50 = t.rttMsP50, rttP95 = t.rttMsP95, cpusAllowed = t.cpusAllowed, totalBytes = profiler.memInfo().totalMem, decodeTps = maxOf(it.decodeTps, decodeTps)) }
+                                val loads = profiler.coreLoads()
+                                val t = profiler.telemetry(if (decodeTps > 0f) decodeTps else MeshState.ui.value.decodeTps, trimLevel, heldBytes(), loads)
+                                MeshState.set { it.copy(availBytes = t.availBytes, thermalHeadroom = t.thermalHeadroom, thermalStatus = t.thermalStatus, batteryPct = t.batteryPct.toInt(), charging = t.charging, rttP50 = t.rttMsP50, rttP95 = t.rttMsP95, cpusAllowed = t.cpusAllowed, totalBytes = profiler.memInfo().totalMem, decodeTps = maxOf(it.decodeTps, decodeTps), coreLoads = loads, rttHistory = (it.rttHistory + t.rttMsP50).takeLast(40)) }
                                 runCatching { send(envelope { telemetry = t }) }
                                 delay(2000)
                             }

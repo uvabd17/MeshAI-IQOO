@@ -36,6 +36,8 @@ pub struct Device {
     pub telemetry: Option<proto::Telemetry>,
     pub usable_override_bytes: Option<u64>,
     pub last_seen_ms: u64,
+    #[serde(default)]
+    pub progress: Option<Progress>,
     /// When `telemetry` was last sampled (memory figures older than the run's `ready_ms` earn no credit).
     #[serde(default)]
     pub telemetry_ms: u64,
@@ -59,6 +61,30 @@ pub struct Device {
 }
 
 impl Device {
+    /// One line of specs for dashboards: "SM7475 · 8 cores · 7.4 GB RAM · android/15".
+    pub fn spec(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(p) = &self.profile {
+            if !p.soc.is_empty() {
+                parts.push(p.soc.split(" · ").next().unwrap_or(&p.soc).to_string());
+            }
+            let cores = p.cores.iter().filter(|c| c.allowed).count();
+            if cores > 0 {
+                parts.push(format!("{cores} cores"));
+            }
+            if p.total_bytes > 0 {
+                parts.push(format!("{:.1} GB RAM", p.total_bytes as f64 / 1e9));
+            }
+            if !p.os.is_empty() {
+                parts.push(p.os.split(" (").next().unwrap_or(&p.os).to_string());
+            }
+        }
+        if let Some(o) = self.usable_override_bytes {
+            parts.push(format!("capped at {:.2} GB", o as f64 / 1e9));
+        }
+        parts.join(" · ")
+    }
+
     /// The single membership predicate used by cleanup, forget and failure reports (round-5 #2).
     pub fn in_run(&self) -> bool {
         self.has_plan || self.role == "host" || self.role == "worker"
@@ -98,8 +124,18 @@ impl Device {
             charging: t.charging,
             is_local: self.is_local,
             supported: self.supported(),
+            can_host: self.kind != DeviceKind::Sim,
         }
     }
+}
+
+/// Last progress a device reported for any job (download, worker bring-up); shown on dashboards.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Progress {
+    pub job: String,
+    pub fraction: f32,
+    pub note: String,
+    pub ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,6 +309,7 @@ impl AppState {
             telemetry: None,
             usable_override_bytes: None,
             last_seen_ms: now_ms(),
+            progress: None,
             telemetry_ms: 0,
             bench_tps: 0.0,
             worker_ready_plan: None,
@@ -415,9 +452,16 @@ impl AppState {
 
     // ---------- pairing ----------
     pub fn new_offer(&self, control_port: u16) -> PairingOffer {
-        let ip = local_ip_address::local_ip()
-            .map(|i| i.to_string())
-            .unwrap_or_else(|_| "127.0.0.1".into());
+        self.new_offer_at(None, control_port)
+    }
+
+    /// The offer names the laptop address the phone must dial; a laptop with several links
+    /// (Wi-Fi + USB tethering) can pick one explicitly (`POST /api/pair/offer {"host": …}`).
+    pub fn new_offer_at(&self, host: Option<String>, control_port: u16) -> PairingOffer {
+        let ip = host
+            .filter(|h| !h.is_empty())
+            .or_else(|| local_ip_address::local_ip().ok().map(|i| i.to_string()))
+            .unwrap_or_else(|| "127.0.0.1".into());
         let o = self.pairing.lock().unwrap().offer(&ip, control_port);
         *self.offer.write().unwrap() = Some(o.clone());
         o
@@ -783,15 +827,66 @@ pub fn qr_terminal(payload: &str) -> String {
         .build()
 }
 
-/// Anonymous + shmem resident bytes of a process from `/proc/<pid>/status` (0 if unreadable).
+/// Anonymous + shmem resident bytes of a process: `/proc/<pid>/status` on Linux; elsewhere
+/// (Windows, macOS) the resident set reported by sysinfo, which excludes file-backed pages on
+/// Windows (private working set) — the same "what a stop gives back" meaning. 0 if unreadable.
 pub fn rss_anon_of(pid: u32) -> u64 {
-    std::fs::read_to_string(format!("/proc/{pid}/status"))
-        .map(|t| parse_rss_anon(&t))
-        .unwrap_or(0)
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .map(|t| parse_rss_anon(&t))
+            .unwrap_or(0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut s = sysinfo::System::new();
+        let p = sysinfo::Pid::from_u32(pid);
+        s.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[p]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing().with_memory(),
+        );
+        s.process(p).map(|pr| pr.memory()).unwrap_or(0)
+    }
+}
+
+/// Is the process still running? (sysinfo: works on Linux, Windows and macOS.)
+pub fn process_alive(pid: u32) -> bool {
+    let mut s = sysinfo::System::new();
+    let p = sysinfo::Pid::from_u32(pid);
+    s.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[p]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
+    s.process(p).is_some()
+}
+
+/// Ask a process to stop (`force = false`: SIGTERM on unix, TerminateProcess on Windows where no
+/// gentler signal exists; `force = true`: SIGKILL / TerminateProcess).
+pub fn signal_process(pid: u32, force: bool) {
+    let mut s = sysinfo::System::new();
+    let p = sysinfo::Pid::from_u32(pid);
+    s.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[p]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
+    if let Some(pr) = s.process(p) {
+        let sig = if force {
+            sysinfo::Signal::Kill
+        } else {
+            sysinfo::Signal::Term
+        };
+        if pr.kill_with(sig).is_none() {
+            pr.kill(); // platform has no such signal (Windows): terminate
+        }
+    }
 }
 
 /// `RssAnon` + `RssShmem` in bytes from a `/proc/<pid>/status` text; falls back to `VmRSS − RssFile`
-/// on kernels without the split fields.
+/// on kernels without the split fields. Linux only at runtime; kept on every target for the unit test.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn parse_rss_anon(status: &str) -> u64 {
     let kb = |key: &str| -> Option<u64> {
         status

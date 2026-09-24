@@ -21,6 +21,8 @@ class LlamaRunner(private val ctx: Context) {
     @Volatile private var proc: Process? = null
     /** (role, planId the process was started for, exit code) — only for the process we still own. */
     var onExit: ((role: String, planId: String, code: Int) -> Unit)? = null
+    /** Model download progress 0..100, invoked on every whole-percent change (the service relays it to meshd). */
+    var onDownload: ((pct: Int) -> Unit)? = null
     enum class Start { STARTED, REFUSED, FAILED }
     val currentRole: String get() = gate.currentRole
     val currentPlanId: String get() = gate.currentPlanId
@@ -135,7 +137,7 @@ class LlamaRunner(private val ctx: Context) {
                         val n = inp.read(buf); if (n < 0) break
                         out.write(buf, 0, n); got += n
                         val pct = if (total > 0) (100 * got / total).toInt() else -1
-                        if (pct != lastPct) { lastPct = pct; MeshState.set { it.copy(downloadPct = pct) } }
+                        if (pct != lastPct) { lastPct = pct; MeshState.set { it.copy(downloadPct = pct) }; onDownload?.invoke(pct) }
                     }
                 }
             }

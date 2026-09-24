@@ -74,7 +74,8 @@ message Telemetry {
   string cpus_allowed     = 10;  // /proc/self/status Cpus_allowed_list (shows the cpuset we live in)
   float  decode_tps       = 11;  // when a plan is active
   uint32 trim_level       = 12;  // last onTrimMemory level (Android), 0 otherwise
-  uint64 held_bytes       = 13;  // anonymous RSS of this device's own llama.cpp child process(es): what stopping the run returns to MemAvailable (D024)
+  uint64 held_bytes       = 13;
+  repeated float core_loads = 14; // per-core current clock / max clock, 0..1 (dashboards: "cores at work")  // anonymous RSS of this device's own llama.cpp child process(es): what stopping the run returns to MemAvailable (D024)
 }
 
 // ---- the decision -------------------------------------------------------------------
@@ -92,6 +93,9 @@ message Placement {
   uint32  rpc_port    = 9;
   double  split_weight= 10;  // llama.cpp --tensor-split share (workers only)
   bool    is_host     = 11;
+  string  display_name= 12;  // for dashboards: "Xiaomi 23049PCD8I", "IdeaPad-3 (this laptop)"
+  string  kind        = 13;  // "phone" | "laptop" | "sim"
+  string  spec        = 14;  // one line: "SM7475 · 8 cores · 7.4 GB RAM · Android 15"
 }
 
 message Plan {
@@ -105,6 +109,8 @@ message Plan {
   string  model_file = 8;    // GGUF file name in the coordinator catalog (GET /api/models/file/<model_file>)
   string  coordinator= 9;    // "ip:api_port" of meshd, for model fetch
   uint32  n_threads  = 10;   // suggested worker thread count (0 = device decides)
+  uint32  n_layer    = 11;   // transformer blocks in the model (for layer bars)
+  string  model_label= 12;   // "Qwen3 0.6B Instruct · Q8_0"
 }
 
 // ---- background jobs ----------------------------------------------------------------
