@@ -15,6 +15,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Reserve on every device until Phase 0 measures the real kill line (D016).
 pub const HEADROOM_BYTES: u64 = 2_000_000_000;
 
+/// Memory we refuse to give a model, so the machine stays usable.
+///
+/// A flat 2 GB was written for a 20 GB laptop. On an 8 GB one it removes a
+/// quarter of the machine before anything starts, and on a 6 GB phone the
+/// equivalent flat figure left 0.6 GB usable, which made the planner refuse
+/// the device entirely. Both ends now scale with the hardware: 15% of total,
+/// never below 0.8 GB, never above 2.5 GB.
+pub fn headroom_for(total_bytes: u64) -> u64 {
+    (total_bytes / 100 * 15).clamp(800_000_000, 2_500_000_000)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DeviceKind {
     Laptop,
@@ -510,7 +521,7 @@ impl AppState {
             cpu_features: Vec::new(),
             cores,
             total_bytes: total,
-            headroom_bytes: HEADROOM_BYTES,
+            headroom_bytes: headroom_for(total),
             tier: proto::Tier::A as i32,
             backends: vec![],
             models: vec![],
@@ -1758,5 +1769,35 @@ mod tests {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod headroom_tests {
+    use super::headroom_for;
+
+    #[test]
+    fn scales_with_the_machine_and_stays_inside_sane_bounds() {
+        // a 6 GB phone keeps 0.9 GB back, not 1.5 GB
+        assert_eq!(headroom_for(6_000_000_000), 900_000_000);
+        // an 8 GB laptop or phone keeps 1.2 GB, not 2 GB
+        assert_eq!(headroom_for(8_000_000_000), 1_200_000_000);
+        // a 16 GB phone keeps more than the old flat figure
+        assert_eq!(headroom_for(16_000_000_000), 2_400_000_000);
+        // floor: a 2 GB device still leaves the system 0.8 GB
+        assert_eq!(headroom_for(2_000_000_000), 800_000_000);
+        // ceiling: a 64 GB desktop does not lose 9.6 GB
+        assert_eq!(headroom_for(64_000_000_000), 2_500_000_000);
+    }
+
+    #[test]
+    fn a_6gb_phone_can_now_actually_contribute() {
+        // 6 GB phone with 2.1 GB free, the situation that made it useless
+        let free = 2_100_000_000u64;
+        let old = free.saturating_sub(1_500_000_000);
+        let new = free.saturating_sub(headroom_for(6_000_000_000));
+        assert_eq!(old, 600_000_000);
+        assert_eq!(new, 1_200_000_000);
+        assert!(new > old * 2 - 1);
     }
 }

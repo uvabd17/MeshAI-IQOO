@@ -41,6 +41,69 @@ pub struct LlamaArgs {
 }
 
 /// Pure derivation of llama-server arguments from a plan (unit-tested below).
+/// Flags llama.cpp has gained and lost across versions. We pass several that
+/// are not present in every build (`--fit` arrived recently; older builds and
+/// some forks lack `--reasoning`). An unknown flag makes llama-server exit
+/// immediately with status 0, which looks exactly like a crash with no message,
+/// so we ask the binary what it supports and drop anything it does not know.
+fn engine_help(program: &str) -> &'static str {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap();
+    if let Some(h) = guard.get(program) {
+        return h;
+    }
+    let text = std::process::Command::new(program)
+        .arg("--help")
+        .output()
+        .map(|o| {
+            let mut t = String::from_utf8_lossy(&o.stdout).into_owned();
+            t.push_str(&String::from_utf8_lossy(&o.stderr));
+            t
+        })
+        .unwrap_or_default();
+    let leaked: &'static str = Box::leak(text.into_boxed_str());
+    guard.insert(program.to_string(), leaked);
+    leaked
+}
+
+/// Remove optional flags this build does not advertise. Returns the kept args
+/// and the names dropped, so the caller can say so in the run log.
+pub fn drop_unsupported_flags(program: &str, args: &[String]) -> (Vec<String>, Vec<String>) {
+    // flag -> does it take a value
+    const OPTIONAL: &[(&str, bool)] = &[
+        ("--fit", true),
+        ("--reasoning", true),
+        ("--no-mmproj-offload", false),
+        ("--metrics", false),
+        ("--jinja", false),
+    ];
+    let help = engine_help(program);
+    if help.is_empty() {
+        return (args.to_vec(), Vec::new());   // could not ask: change nothing
+    }
+    let mut kept = Vec::with_capacity(args.len());
+    let mut dropped = Vec::new();
+    let mut skip_value = false;
+    for a in args {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if let Some((flag, takes_value)) = OPTIONAL.iter().find(|(f, _)| f == a) {
+            if !help.contains(flag) {
+                dropped.push((*flag).to_string());
+                skip_value = *takes_value;
+                continue;
+            }
+        }
+        kept.push(a.clone());
+    }
+    (kept, dropped)
+}
+
 pub fn derive_args(
     model_path: &str,
     n_ctx: u32,
@@ -457,8 +520,15 @@ async fn bring_up(
 
     if la.host_is_local {
         st.push_log(format!("host: {} {}", la.program, la.args.join(" ")));
+        let (spawn_args, dropped) = drop_unsupported_flags(&la.program, &la.args);
+        if !dropped.is_empty() {
+            st.push_log(format!(
+                "this llama.cpp build does not support {}; running without it",
+                dropped.join(", ")
+            ));
+        }
         let mut cmd = Command::new(&la.program);
-        cmd.args(&la.args)
+        cmd.args(&spawn_args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);

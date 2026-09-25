@@ -101,7 +101,10 @@ class Profiler(private val ctx: Context) {
         val feats = cpuFeatures()
         val isArm = Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a"
         return when {
-            isArm && ("asimddp" !in feats || "i8mm" !in feats) -> Tier.TIER_UNSUPPORTED
+            isArm && "asimddp" !in feats -> Tier.TIER_UNSUPPORTED
+            // i8mm is required only by the +i8mm build. A dotprod-only build runs on
+            // ARMv8.2 chips (Cortex-A78 and friends) that have no i8mm, so the gate is
+            // on dotprod and the packaged binaries decide the rest.
             total < 7_000_000_000L -> Tier.TIER_UNSUPPORTED
             soc.startsWith("SM8750") || soc.startsWith("SM8850") -> Tier.TIER_S
             total >= 11_000_000_000L -> Tier.TIER_A
@@ -120,7 +123,7 @@ class Profiler(private val ctx: Context) {
             cpuFeatures.addAll(this@Profiler.cpuFeatures())
             cs.forEachIndexed { i, (khz, cap) -> cores.add(core { index = i; maxKhz = khz; capacity = cap; this.allowed = cpuAllowed(allowed, i) }) }
             totalBytes = mi.totalMem
-            headroomBytes = HEADROOM
+            headroomBytes = headroomFor(mi.totalMem)
             tier = this@Profiler.tier()
             permissions.addAll(grantedPermissions())
             if (hasOpenCl()) backends.add(ai.meshai.proto.backendBench { backend = Backend.BACKEND_OPENCL })
@@ -167,5 +170,29 @@ class Profiler(private val ctx: Context) {
         val p = r.trim().split('-'); when (p.size) { 1 -> p[0].toIntOrNull() == i; 2 -> i in (p[0].toInt())..(p[1].toInt()); else -> false }
     }
 
-    companion object { const val HEADROOM = 1_500_000_000L }
+    companion object {
+        /** Kept for callers that still reference a flat figure (16 GB class phones). */
+        const val HEADROOM = 1_500_000_000L
+
+        /**
+         * Memory we refuse to hand to a model, so Android keeps enough for the
+         * system, the launcher and whatever the owner switches back to.
+         *
+         * A flat 1.5 GB was written for a 16 GB phone. On a 6 to 8 GB device it
+         * eats most of what is actually free: a realme with 7.6 GB total and
+         * 2.1 GB available offered only 0.6 GB, so the planner refused it and
+         * the phone looked useless. Most people own 6 to 8 GB phones, so the
+         * reserve scales with the device instead:
+         *
+         *   6 GB   -> 0.90 GB reserved
+         *   8 GB   -> 1.20 GB
+         *   12 GB  -> 1.80 GB
+         *   16 GB  -> 2.40 GB (more careful than the old flat figure)
+         *
+         * Floor of 0.8 GB so a small phone still leaves the system room to
+         * breathe; ceiling of 2.5 GB so a large phone is not over-taxed.
+         */
+        fun headroomFor(totalBytes: Long): Long =
+            (totalBytes * 15 / 100).coerceIn(800_000_000L, 2_500_000_000L)
+    }
 }
