@@ -4,7 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LLAMA="${LLAMA_SRC:-$ROOT/third_party/llama.cpp}"
-STRIP_ARM="$HOME/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+STRIP_ARM="${ANDROID_NDK_HOME:-$HOME/Android/Sdk/ndk/28.2.13676358}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
 for pair in "arm64-v8a:build-android-arm64-v8a" "x86_64:build-android-x86_64"; do
   abi="${pair%%:*}"; build="${pair##*:}"; src="$LLAMA/$build/bin"
   [[ -x "$src/ggml-rpc-server" && -x "$src/llama-server" && -x "$src/llama-bench" ]] || { echo "skip $abi ($src incomplete)"; continue; }

@@ -196,16 +196,158 @@ Result: ready in 4 seconds, **22.8 tokens per second** generated, 37 tokens per 
 
 ## Step 6. Building the laptop service
 
-(in progress at the time of writing)
+Rust was not installed, so first:
+
+```
+$ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+$ cargo build --manifest-path desktop/Cargo.toml
+   Compiling ... 199 crates ...
+    Finished `dev` profile in 2m 15s
+```
+
+Running it, pointed at our own model folder and our own llama.cpp build:
+
+```
+$ MESHAI_API_TOKEN=demo ./desktop/target/debug/meshd \
+    --models ~/models --llama-bin ~/llama.cpp/build/bin \
+    serve --lan --api-token demo
+```
+
+Asking it what it would do with the model, before running anything:
+
+```
+$ ./desktop/target/debug/meshd --models ~/models --llama-bin ~/llama.cpp/build/bin \
+    plan Qwen3-0.6B-Q8_0.gguf
+
+Qwen3 0.6B Instruct runs entirely on this laptop (1.4 GB of 4.0 GB usable,
+incl. 300 MB compute reserve)
+  Host: fits on one device: needs 1.1 GB (weights 0.6 GB + KV 0.5 GB @ 4096 ctx)
+        + 300 MB compute reserve = 1.4 GB, has 4.0 GB usable — no network in the path
+```
+
+It also prints the exact command it would run. One flag there is worth noticing: `--reasoning off`. That is the fix for the empty-answer trap from step 5, already learned and encoded.
+
+Then starting a run and asking a question through the one address:
+
+```
+$ curl -X POST -d '{"model":"Qwen3-0.6B-Q8_0.gguf","n_ctx":4096}' .../api/run
+$ curl -X POST -d '{"messages":[...]}' .../v1/chat/completions
+generated 31 tokens at 23.0 tok/s
+```
+
+**Laptop baseline: 23.0 tokens per second.**
 
 ---
 
 ## Step 7. Building llama.cpp for the phone
 
-(in progress)
+A phone has a different processor family (ARM), so the engine must be cross-compiled with the Android NDK.
+
+The build script failed instantly, twice, with no error message. Both were the same class of bug, worth understanding because it cost twenty minutes:
+
+The script begins with `set -e`, meaning "stop if any command fails".
+
+```bash
+command -v ninja >/dev/null && GEN=Ninja          # fails on a machine without ninja
+BUILD=".../build-android-$ABI$([[ $OPENCL == 1 ]] && echo -opencl)"   # test is false in a normal build
+```
+
+A test that returns "no" counts as a failed command, so the script exited silently both times. It had only ever run on a machine where ninja was installed. Both are fixed on this branch.
+
+Then it built:
+
+```
+$ ANDROID_NDK_HOME=~/Android/ndk/28.2.13676358 LLAMA_SRC=~/llama.cpp \
+    bash scripts/android-build-llama.sh
+[219/219] Linking CXX executable bin/llama-server
+```
+
+Verifying the result is genuinely a phone binary:
+
+```
+$ file bin/ggml-rpc-server
+ELF 64-bit LSB pie executable, ARM aarch64
+$ llvm-readelf -l bin/ggml-rpc-server | grep LOAD
+LOAD align: 0x4000
+```
+
+ARM, not Intel, and 16 KB page alignment, which recent Android requires.
+
+Staging them into the app:
+
+```
+$ bash scripts/android-sync-natives.sh
+arm64-v8a: 13 files, 18M
+```
+
+Executables are renamed `lib*.so` on purpose: Android only unpacks files with that shape and gives them permission to run.
+
+Building the app:
+
+```
+$ ./gradlew assembleDebug --offline
+FAILURE: Plugin [id: 'org.jetbrains.kotlin.android', version: '2.1.20'] was not found
+```
+
+**This is the failure we most need to avoid at the venue.** Offline mode could not find a build plugin that was never downloaded on this machine. With no internet on Saturday, that is a lost Green Light block. Building once with the network fixed it permanently:
+
+```
+$ ./gradlew assembleDebug
+BUILD SUCCESSFUL in 7m 58s
+app-debug.apk   67.9 MB
+
+$ ./gradlew assembleDebug --offline      # the proof that matters
+BUILD SUCCESSFUL in 15s
+```
 
 ---
 
-## Step 8. The phone
+## Step 8. Proving the split without a phone
 
-(pending the cable)
+The phone was not attached yet, so the helper was run on this same laptop. That removes the network entirely and isolates one question: what does splitting cost by itself?
+
+```
+$ ggml-rpc-server -H 127.0.0.1 -p 50052 &
+Starting RPC server v7.0.0
+Devices: CPU: Intel(R) Core(TM) i3-7020U (7840 MiB free)
+
+$ llama-server -m Qwen3-0.6B-Q8_0.gguf -c 2048 --port 8082 \
+    --rpc 127.0.0.1:50052 -ngl 15 --reasoning off
+```
+
+`-ngl 15` hands fifteen of the twenty-eight layers to the helper.
+
+Result:
+
+| Setup | Speed |
+|---|---|
+| Laptop alone | 23.0 tok/s |
+| Split, helper on the same machine, no network | **19.6 tok/s** |
+
+**A 15% loss with zero network latency.** That is the cost of the split protocol itself: the floor. Every real network cost adds on top. It matches the shape of llama.cpp issue #22850, which measured 28 to 55% loss over a wired link.
+
+And the proof that layers really moved, rather than the number being an illusion:
+
+```
+$ ps -o pid,rss -C ggml-rpc-server
+504 MB        # the helper is holding model layers in its own memory
+$ ps -o pid,rss -C llama-server
+570 MB
+```
+
+---
+
+## What this session established
+
+1. The whole chain works on a weak laptop: 23.0 tok/s on a 0.6B model.
+2. The planner's decisions are real and explainable, including refusing devices.
+3. Splitting costs about 15% before any network is involved.
+4. The phone binaries build correctly, with the right architecture and alignment.
+5. The app builds, and now builds offline, which it could not do an hour ago.
+6. Two silent bugs in the build script are fixed.
+
+## Still open
+
+- Nothing has run on a phone yet.
+- Office Kit cannot run on Ubuntu, which costs 10% of the score and the Red Light bridge. See `docs/office-kit.md`.
+- The gate measurement, a model that fits neither device split over a real link, is still unmeasured.
