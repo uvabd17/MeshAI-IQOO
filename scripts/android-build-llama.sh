@@ -36,7 +36,7 @@ if [[ $OPENCL == 1 ]]; then
 fi
 
 # Ninja is faster if present; fall back to Makefiles (verified path).
-GEN="Unix Makefiles"; command -v ninja >/dev/null && GEN=Ninja
+GEN="Unix Makefiles"; if command -v ninja >/dev/null 2>&1; then GEN=Ninja; fi
 
 cmake -S "$LLAMA_SRC" -B "$BUILD" -G "$GEN" \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
