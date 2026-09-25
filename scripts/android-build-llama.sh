@@ -25,7 +25,8 @@ if [[ ! -d "$LLAMA_SRC" ]]; then
   git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_SRC"
 fi
 
-BUILD="$LLAMA_SRC/build-android-$ABI$([[ $OPENCL == 1 ]] && echo -opencl)"
+BUILD="$LLAMA_SRC/build-android-$ABI"
+if [[ $OPENCL == 1 ]]; then BUILD="$BUILD-opencl"; fi
 EXTRA=()
 if [[ $OPENCL == 1 ]]; then
   # OpenCL headers + ICD loader must be built for Android first:
