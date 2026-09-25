@@ -22,28 +22,33 @@
       <div class="now-bar" id="now-bar" hidden><i></i></div>
       <div class="now-dev" id="now-dev"></div>
     </div>
-    <nav class="pages" id="pages">
-      <button data-page="devices" class="active"><i data-i="phone"></i>1 Devices</button>
-      <button data-page="run"><i data-i="play"></i>2 Run</button>
-      <button data-page="chat"><i data-i="chat"></i>3 Chat</button>
+    <nav class="pages" id="steps">
+      <button data-step="devices" class="active"><i data-i="phone"></i>1 Devices</button>
+      <button data-step="models"><i data-i="play"></i>2 Models<i class="lock-i" data-i="lock" hidden></i></button>
+      <button data-step="prepare"><i data-i="download"></i>3 Prepare<i class="lock-i" data-i="lock" hidden></i></button>
+      <button data-step="use"><i data-i="chat"></i>4 Use<i class="lock-i" data-i="lock" hidden></i></button>
     </nav>
     <div class="top-tools">
       <div class="status" id="status-pill"><span class="dot"></span><span id="status-text">idle</span></div>
       <button class="btn sm danger" id="stop-btn" hidden><i data-i="stop"></i>Stop</button>
+      <button class="btn sm ghost" id="details-btn">Details</button>
       <button class="btn sm ghost" id="theme" title="light / dark"><i data-i="sun"></i></button>
-      <label class="adv-toggle"><input type="checkbox" id="adv"> Advanced</label>
     </div>
   </header>
 
+  <!-- Recovery: what happened, what to do next. Always visible, any step. -->
+  <div id="recovery-banner" class="recovery-banner" hidden></div>
+
   <main class="main">
-    <!-- PAGE 1: DEVICES -->
-    <section class="page" id="page-devices">
+    <!-- STEP 1: DEVICES -->
+    <section class="page" id="step-devices">
       <div class="card connect-card" id="connect-card">
         <div class="card-h"><h3>Connect your phone</h3><span class="muted sm" id="usb-sub">looking for a phone on USB…</span></div>
         <div class="connect">
           <div class="connect-usb">
             <div class="how"><b>Easiest: USB cable.</b> Plug the phone in with USB debugging on, then press the button. The app opens on the phone; tap <b>Join</b> there.</div>
             <div id="usb" class="usb"></div>
+            <div id="care-note" class="care-note" hidden></div>
           </div>
           <div class="connect-or">or</div>
           <div class="connect-qr">
@@ -51,108 +56,189 @@
             <div class="pair"><div id="qr" class="qr"><button class="btn" id="offer-btn"><i data-i="qr"></i>Show QR</button></div><div class="muted sm" id="qr-text"></div></div>
           </div>
         </div>
+        <div class="row laptop-only-row">
+          <span class="muted sm">Not pairing a phone right now?</span>
+          <button class="btn ghost" id="laptop-only-btn">Continue with this laptop only</button>
+        </div>
       </div>
       <div class="card-h plain"><h3>Your devices</h3><span class="muted sm" id="link-sub"></span></div>
       <div class="devices2" id="devices2"></div>
-      <div class="advanced" id="adv-devices" hidden>
-        <div class="card">
-          <div class="card-h"><h3>Advanced · simulate phones</h3><span class="muted sm">for testing without hardware</span></div>
-          <div class="form row">
-            <label>Count <input id="sim-n" type="number" min="0" max="4" value="2"></label>
-            <label>Usable GB each <input id="sim-gb" type="number" step="0.5" value="1"></label>
-            <label class="check"><input id="sim-spawn" type="checkbox" checked> start real local RPC workers</label>
-            <button class="btn" id="sim-btn"><i data-i="phone"></i>Apply</button>
-          </div>
+      <div id="advice-list" class="advice-list"></div>
+      <div class="card" id="mesh-summary" hidden>
+        <div class="card-h"><h3>What this mesh can do</h3></div>
+        <div id="mesh-summary-body" class="mesh-summary-body"></div>
+      </div>
+      <div class="row" style="justify-content:flex-end"><button class="btn primary lg" id="to-models">Next: pick a model <i data-i="play"></i></button></div>
+    </section>
+
+    <!-- STEP 2: MODELS -->
+    <section class="page" id="step-models" hidden>
+      <div class="card">
+        <div class="card-h"><h3>Pick a model</h3><span class="muted sm" id="models-dir"></span></div>
+        <div class="form row" style="margin-top:8px">
+          <label>Memory for the conversation <select id="qs-ctx"><option value="2048">short (2k tokens)</option><option value="4096" selected>normal (4k)</option><option value="8192">long (8k)</option><option value="16384">very long (16k)</option></select></label>
         </div>
+        <div id="feasibility-note" class="muted sm"></div>
+        <div class="model-group">
+          <h4>Easy <span class="muted sm">— runs now</span></h4>
+          <div id="cards-easy" class="model-cards"></div>
+        </div>
+        <div class="model-group">
+          <h4>Hard but doable</h4>
+          <div id="cards-hard" class="model-cards"></div>
+        </div>
+        <div class="model-group">
+          <h4>Not possible now</h4>
+          <div id="cards-impossible" class="model-cards"></div>
+        </div>
+      </div>
+      <div class="row" style="justify-content:space-between">
+        <button class="btn" id="to-devices2">&larr; Devices</button>
+        <button class="btn primary lg" id="to-prepare">Next: prepare &rarr;</button>
       </div>
     </section>
 
-    <!-- PAGE 2: RUN -->
-    <section class="page" id="page-run" hidden>
-      <div class="run-grid">
-        <div class="card">
-          <div class="card-h"><h3>Pick a model</h3><span class="muted sm" id="models-dir"></span></div>
-          <div id="model-cards" class="model-cards"></div>
-          <div class="form row" style="margin-top:8px">
-            <label>Memory for the conversation <select id="qs-ctx"><option value="2048">short (2k tokens)</option><option value="4096" selected>normal (4k)</option><option value="8192">long (8k)</option><option value="16384">very long (16k)</option></select></label>
-            <label>Who runs it <select id="qs-host"><option value="">auto</option></select></label>
-            <button class="btn primary lg" id="qs-run"><i data-i="play"></i>Run</button>
-            <button class="btn lg" id="stop-btn2"><i data-i="stop"></i>Stop</button>
-          </div>
-          <div id="qs-result" class="plan-mini muted">Pick a model to see where it will run.</div>
-        </div>
-        <div class="card mesh-card">
-          <div class="card-h"><h3>Who holds what</h3><span class="sticker" id="mesh-sub">no plan</span></div>
-          <div id="mesh-model" class="mesh-model"></div>
-          <div id="stack" class="stack"></div>
-          <div id="mesh" class="mesh"></div>
+    <!-- STEP 3: PREPARE -->
+    <section class="page" id="step-prepare" hidden>
+      <div class="card">
+        <div class="card-h"><h3>Prepare</h3><span class="muted sm" id="prepare-model-name"></span></div>
+        <div id="prepare-checklist" class="checklist"></div>
+        <div id="prepare-laptop" class="prepare-block"></div>
+        <div id="prepare-phones" class="prepare-block"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h3>Calculate</h3><span class="muted sm" id="calc-model-name"></span></div>
+        <div class="form row">
+          <label>a typical question, words in <input id="q-in" type="number" min="1" step="10" value="500" style="width:90px"></label>
+          <label>words out <input id="q-out" type="number" min="1" step="10" value="200" style="width:90px"></label>
+          <button class="btn primary lg" id="calc-btn"><i data-i="play"></i>Calculate</button>
         </div>
       </div>
-      <div class="card"><div class="card-h"><h3>Live feed</h3><span class="muted sm">what the devices report while starting</span></div><div id="feed" class="feed"></div></div>
-      <div class="advanced" id="adv-run" hidden>
-        <div class="grid2">
-          <div class="card"><div class="card-h"><h3>Advanced · llama.cpp invocation</h3></div><pre class="log" id="plan-args"></pre><div id="placements" class="placements"></div></div>
-          <div class="card"><div class="card-h"><h3>Advanced · host log (raw)</h3></div><pre class="log" id="log"></pre></div>
-        </div>
-        <div class="card">
-          <div class="card-h"><h3>Advanced · model files</h3><button class="btn sm ghost" id="rescan"><i data-i="refresh"></i>Rescan</button></div>
-          <div id="catalog" class="catalog"></div>
-          <div class="form row">
-            <label class="grow">URL <input id="dl-url" placeholder="https://huggingface.co/…/resolve/main/model.gguf"></label>
-            <label>File name <input id="dl-file" placeholder="model.gguf"></label>
-            <button class="btn" id="dl-btn"><i data-i="download"></i>Download</button>
-          </div>
-          <div id="disk" class="table"></div>
-        </div>
-        <div class="card">
-          <div class="card-h"><h3>Advanced · analytics</h3></div>
-          <div class="grid3" id="runs-stats"></div>
-          <div id="runs-bars" class="bars"></div>
-          <div id="runs-table" class="table"></div>
-        </div>
+      <div id="verdict-wrap"></div>
+      <div class="card" id="calc-detail" hidden>
+        <div class="card-h"><h3>Who holds what</h3></div>
+        <div id="calc-stack" class="stack"></div>
+        <div class="table" id="calc-table"></div>
+        <div class="card-h"><h3>Time for one question</h3></div>
+        <div id="calc-time"></div>
+        <div id="calc-history" class="muted sm"></div>
+        <div id="calc-bottleneck" class="muted sm"></div>
+        <div id="calc-whynot"></div>
+        <details id="calc-warnings-wrap" class="callout" hidden><summary>how these numbers were made</summary><div id="calc-warnings"></div></details>
+        <div class="row"><button class="btn primary lg" id="run-btn"><i data-i="play"></i>Start</button></div>
+      </div>
+      <div class="row" style="justify-content:flex-start">
+        <button class="btn" id="to-models2">&larr; Models</button>
       </div>
     </section>
 
-    <!-- PAGE 3: CHAT -->
-    <section class="page" id="page-chat" hidden>
-      <div class="power" id="power"></div>
-      <div class="chat-wrap">
-        <div class="card chat-card">
-          <div class="card-h"><h3>Talk to your mesh</h3><div class="row"><span class="muted sm" id="chat-model"></span><button class="btn sm ghost" id="chat-clear">Clear</button></div></div>
-          <div id="cando" class="cando"></div>
-          <div id="chat" class="chat"></div>
-          <div id="attach-list" class="attach-list"></div>
-          <form id="chat-form" class="chat-form">
-            <label class="btn sm ghost attach" title="attach an image (vision models) or a text / CSV / JSON / code file to analyse"><i data-i="attach"></i><input type="file" id="chat-file" multiple hidden accept="image/*,.txt,.md,.csv,.json,.log,.py,.js,.ts,.rs,.kt,.java,.c,.cpp,.h,.html,.css,.yaml,.yml,.toml,.xml,.sql"></label>
-            <textarea id="chat-input" rows="2" placeholder="Ask anything… paste text, or attach an image / file (Enter to send)"></textarea>
-            <button class="btn primary" type="submit" id="chat-send"><i data-i="send"></i></button>
-          </form>
+    <!-- STEP 4: USE -->
+    <section class="page" id="step-use" hidden>
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <span class="muted sm">Using: <b id="use-model-name"></b></span>
+          <button class="btn sm danger" id="stop-back-btn"><i data-i="stop"></i>Stop and go back</button>
         </div>
-        <div class="card stats-card">
-          <div class="card-h"><h3>Last answer</h3></div>
-          <div class="stat-grid" id="chat-stats">
-            <div class="stat"><div class="k">first word after</div><div class="v" id="s-ttft">—</div></div>
-            <div class="stat"><div class="k">words per second</div><div class="v" id="s-tps">—</div></div>
-            <div class="stat"><div class="k">tokens</div><div class="v" id="s-tok">—</div></div>
-            <div class="stat"><div class="k">total</div><div class="v" id="s-total">—</div></div>
+      </div>
+      <div class="card" id="calc-chat">
+        <div class="power" id="power"></div>
+        <div class="chat-wrap">
+          <div class="card chat-card">
+            <div class="card-h"><h3>Talk to your mesh</h3><div class="row"><span class="muted sm" id="chat-model"></span><button class="btn sm ghost" id="chat-clear">Clear</button></div></div>
+            <div id="cando" class="cando"></div>
+            <div id="chat" class="chat"></div>
+            <div id="attach-list" class="attach-list"></div>
+            <form id="chat-form" class="chat-form">
+              <label class="btn sm ghost attach" title="attach an image (vision models) or a text / CSV / JSON / code file to analyse"><i data-i="attach"></i><input type="file" id="chat-file" multiple hidden accept="image/*,.txt,.md,.csv,.json,.log,.py,.js,.ts,.rs,.kt,.java,.c,.cpp,.h,.html,.css,.yaml,.yml,.toml,.xml,.sql"></label>
+              <textarea id="chat-input" rows="2" placeholder="Ask anything… paste text, or attach an image / file (Enter to send)"></textarea>
+              <button class="btn primary" type="submit" id="chat-send"><i data-i="send"></i></button>
+            </form>
           </div>
-          <div class="card-h"><h3>Who answered</h3></div>
-          <div id="who" class="who"></div>
-          <div class="advanced" hidden>
-            <div class="card-h"><h3>Cloud reference</h3></div>
-            <div class="form">
-              <label>Endpoint <input id="ref-url" placeholder="https://api.openai.com/v1"></label>
-              <label>API key <input id="ref-key" type="password" placeholder="sk-…"></label>
-              <label>Model <input id="ref-model" placeholder="gpt-4o-mini"></label>
-              <button class="btn sm" id="ref-send"><i data-i="cloud"></i>Send same prompt to cloud</button>
-              <span class="muted sm" id="ref-out"></span>
+          <div class="card stats-card">
+            <div class="card-h"><h3>Last answer</h3></div>
+            <div class="stat-grid" id="chat-stats">
+              <div class="stat"><div class="k">first word after</div><div class="v" id="s-ttft">—</div></div>
+              <div class="stat"><div class="k">words per second</div><div class="v" id="s-tps">—</div></div>
+              <div class="stat"><div class="k">tokens</div><div class="v" id="s-tok">—</div></div>
+              <div class="stat"><div class="k">total</div><div class="v" id="s-total">—</div></div>
             </div>
+            <div class="muted sm" id="predicted-vs-measured"></div>
+            <div class="card-h"><h3>Who answered</h3></div>
+            <div id="who" class="who"></div>
           </div>
         </div>
       </div>
     </section>
   </main>
 </div>
+
+<!-- Developer Details drawer: everything a non-technical demo does not need -->
+<div id="details-backdrop" class="details-backdrop" hidden></div>
+<aside id="details" class="details" hidden>
+  <div class="details-h"><h3>Details</h3><button class="btn sm ghost" id="details-close"><i data-i="x"></i>Close</button></div>
+
+  <div class="card">
+    <div class="card-h"><h3>Demo presets</h3></div>
+    <div class="row"><button class="btn" id="demo-split-btn">Split demo: cap this laptop so the phone must hold ≈13 layers of Qwen3-8B</button></div>
+    <div class="row"><button class="btn ghost" id="demo-uncap-btn">Remove cap</button></div>
+    <div class="muted sm" id="demo-note"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><h3>Simulate phones</h3><span class="muted sm">for testing without hardware</span></div>
+    <div class="form row">
+      <label>Count <input id="sim-n" type="number" min="0" max="4" value="1"></label>
+      <label>Usable GB each <input id="sim-gb" type="number" step="0.5" value="2"></label>
+      <label class="check"><input id="sim-spawn" type="checkbox"> start real local RPC workers</label>
+      <button class="btn" id="sim-btn"><i data-i="phone"></i>Apply</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><h3>llama.cpp invocation</h3></div>
+    <pre class="log" id="plan-args"></pre>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><h3>Live feed</h3></div>
+    <div id="feed" class="feed"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><h3>Host log (raw)</h3></div>
+    <pre class="log" id="log"></pre>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><h3>Model files</h3><button class="btn sm ghost" id="rescan"><i data-i="refresh"></i>Rescan</button></div>
+    <div id="catalog" class="catalog"></div>
+    <div class="form row">
+      <label class="grow">URL <input id="dl-url" placeholder="https://huggingface.co/…/resolve/main/model.gguf"></label>
+      <label>File name <input id="dl-file" placeholder="model.gguf"></label>
+      <button class="btn" id="dl-btn"><i data-i="download"></i>Download</button>
+    </div>
+    <div id="disk" class="table"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><h3>Analytics</h3></div>
+    <div class="grid3" id="runs-stats"></div>
+    <div id="runs-bars" class="bars"></div>
+    <div id="runs-table" class="table"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><h3>Cloud reference</h3></div>
+    <div class="form">
+      <label>Endpoint <input id="ref-url" placeholder="https://api.openai.com/v1"></label>
+      <label>API key <input id="ref-key" type="password" placeholder="sk-…"></label>
+      <label>Model <input id="ref-model" placeholder="gpt-4o-mini"></label>
+      <button class="btn sm" id="ref-send"><i data-i="cloud"></i>Send same prompt to cloud</button>
+      <span class="muted sm" id="ref-out"></span>
+    </div>
+  </div>
+</aside>
+
 <div id="toast" class="toast" hidden></div>
 <script src="app.js"></script>
 </body>

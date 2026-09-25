@@ -13,6 +13,14 @@ import java.util.concurrent.TimeUnit
  * Runs llama.cpp binaries shipped as jniLibs (D010): libmeshai_rpc.so (ggml-rpc-server),
  * libmeshai_server.so (llama-server), libmeshai_bench.so (llama-bench). They are extracted with exec
  * permission into nativeLibraryDir; LD_LIBRARY_PATH points there for libllama.so & co.
+ *
+ * Tensor cache (T098): `-c`/`--cache` in rpc-server.cpp is a bare flag with no path argument — it only
+ * turns caching on. The directory itself is resolved *inside* the RPC server from `LLAMA_CACHE`, else
+ * `XDG_CACHE_HOME`, else `$HOME/.cache/llama.cpp` (`fs_get_cache_directory()`), and `main()` always
+ * appends `rpc/` to whatever that resolves to (third_party/llama.cpp/tools/rpc/rpc-server.cpp:127-171,
+ * 235-236, 319-328). So the only way to put it somewhere explicit is the environment, not an argv flag:
+ * we pin `LLAMA_CACHE` to [rpcCacheRoot] (inside the app's own files dir, survives restarts, cleared on
+ * uninstall) and the server ends up writing under [rpcCacheDir] (`rpcCacheRoot/rpc/`).
  */
 class LlamaRunner(private val ctx: Context) {
     private val libDir = File(ctx.applicationInfo.nativeLibraryDir)
@@ -31,6 +39,10 @@ class LlamaRunner(private val ctx: Context) {
     // Finite read timeout: a stalled model stream must not block the cancellable loop forever.
     private val http = OkHttpClient.Builder().readTimeout(60, TimeUnit.SECONDS).build()
     val modelsDir: File = File(ctx.getExternalFilesDir(null), "models").apply { mkdirs() }
+    /** What we point `LLAMA_CACHE` at; see the class doc for why this isn't a `-c <dir>` argument. */
+    val rpcCacheRoot: File = File(ctx.filesDir, "rpc-cache")
+    /** Where the RPC server actually writes (it appends "rpc/" to LLAMA_CACHE itself). */
+    val rpcCacheDir: File = File(rpcCacheRoot, "rpc")
 
     val available: Boolean get() = File(libDir, "libmeshai_rpc.so").exists()
 
@@ -40,6 +52,14 @@ class LlamaRunner(private val ctx: Context) {
     /** Worker: bind only to the address of the paired link (H2), never 0.0.0.0. */
     fun startWorker(bindHost: String, port: Int, threads: Int, planId: String): Start =
         start("worker", planId, listOf(File(libDir, "libmeshai_rpc.so").path, "-H", bindHost, "-p", "$port", "-t", "$threads", "-c"))
+
+    /** Bytes and file count under [rpcCacheDir] right now — cheap enough to call before every worker start. */
+    fun rpcCacheStats(): CacheStats {
+        if (!rpcCacheDir.isDirectory) return CacheStats(0L, 0)
+        var bytes = 0L; var files = 0
+        rpcCacheDir.walkTopDown().forEach { f -> if (f.isFile) { bytes += f.length(); files++ } }
+        return CacheStats(bytes, files)
+    }
 
     fun startHost(bindHost: String, model: File, nCtx: Int, threads: Int, workers: List<Pair<String, Int>>, workerLayers: List<Int>, planId: String): Start =
         start("host", planId, hostArgs(File(libDir, "libmeshai_server.so").path, model.path, nCtx, threads, bindHost, workers, workerLayers))
@@ -52,6 +72,7 @@ class LlamaRunner(private val ctx: Context) {
                 val pb = ProcessBuilder(cmd).redirectErrorStream(true)
                 pb.environment()["LD_LIBRARY_PATH"] = libDir.path
                 pb.environment()["HOME"] = ctx.filesDir.path
+                pb.environment()["LLAMA_CACHE"] = rpcCacheRoot.path // worker's `-c`; see the class doc
                 pb.directory(ctx.filesDir)
                 pb.start().also { proc = it } // published under the lock: a concurrent stop sees it
             }.onFailure { spawnError = it }.getOrNull() // null → the gate clears the owner under the lock
@@ -106,11 +127,39 @@ class LlamaRunner(private val ctx: Context) {
         proc = null
     }
 
-    /** Fetch a model from the coordinator catalog if not cached. Resumable (M7). Returns the local file. */
-    suspend fun ensureModel(coordinatorApi: String, file: String): File = withContext(Dispatchers.IO) {
+    /**
+     * Fetch a model from the coordinator catalog if not cached. Resumable (M7). Returns the local file.
+     * [expectedSha] is `Plan.model_sha` (proto/mesh.proto); when the plan carries one, a fully-present
+     * file is trusted only if it hashes the same (T098) — otherwise it is verified by size only against
+     * the coordinator's copy (a cheap out-of-range `Range` probe, same 416 path used to resume a `.part`
+     * below), and that is said out loud rather than silently assumed.
+     */
+    suspend fun ensureModel(coordinatorApi: String, file: String, expectedSha: String = ""): File = withContext(Dispatchers.IO) {
         require(file.endsWith(".gguf") && !file.contains('/') && !file.contains("..")) { "bad model name" }
         val dest = File(modelsDir, file)
-        if (dest.exists() && dest.length() > 0) return@withContext dest
+        if (dest.exists() && dest.length() > 0) {
+            val by = ModelVerify.by(expectedSha)
+            var reuse = false
+            when (by) {
+                ModelVerify.By.SHA256 -> {
+                    val actual = runCatching { sha256Hex(dest) }.getOrNull()
+                    when {
+                        actual == null -> { MeshState.log(ModelVerify.unverifiedNote(dest.length())); reuse = true }
+                        actual.equals(expectedSha, ignoreCase = true) -> { MeshState.log(ModelVerify.reusedNote(dest.length(), by)); reuse = true }
+                        else -> { MeshState.log("✗ " + ModelVerify.mismatchNote(by)); dest.delete() }
+                    }
+                }
+                ModelVerify.By.SIZE -> {
+                    val remote = runCatching { remoteSize(coordinatorApi, file) }.getOrNull()
+                    when {
+                        remote == null -> { MeshState.log(ModelVerify.unverifiedNote(dest.length())); reuse = true }
+                        remote == dest.length() -> { MeshState.log(ModelVerify.reusedNote(dest.length(), by)); reuse = true }
+                        else -> { MeshState.log("✗ " + ModelVerify.mismatchNote(by)); dest.delete() }
+                    }
+                }
+            }
+            if (reuse) return@withContext dest
+        }
         val part = File(modelsDir, "$file.part")
         val existing = if (part.exists()) part.length() else 0L
         val req = Request.Builder().url("$coordinatorApi/api/models/file/$file").apply { if (existing > 0) header("Range", "bytes=$existing-") }.build()
@@ -151,17 +200,43 @@ class LlamaRunner(private val ctx: Context) {
         dest
     }
 
+    private fun sha256Hex(file: File): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { inp ->
+            val buf = ByteArray(1 shl 20)
+            while (true) { val n = inp.read(buf); if (n < 0) break; md.update(buf, 0, n) }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Total remote size without downloading anything: a `Range` past any real file's end makes meshd's
+     * `api_model_file` answer 416 with a `Content-Range: bytes <wildcard>/<len>` header (same path the
+     * resumed download above already parses) instead of streaming the body.
+     */
+    private fun remoteSize(coordinatorApi: String, file: String): Long? {
+        val req = Request.Builder().url("$coordinatorApi/api/models/file/$file").header("Range", "bytes=999999999999999-").build()
+        return http.newCall(req).execute().use { resp ->
+            if (resp.code != 416) null else resp.header("Content-Range")?.substringAfter("*/", "")?.toLongOrNull()
+        }
+    }
+
     companion object {
         /**
-         * Same rule as desktop/meshd/src/supervisor.rs `derive_args` (tested on the JVM in HostArgsTest):
-         * llama.cpp counts the output head as a layer, so offload ngl+1, pin the head to CPU, and split the
-         * (ngl+1) offloaded entries by worker layer counts with the extra head slot on the last worker.
+         * Same rule as desktop/meshd/src/supervisor.rs `derive_args` (tested on the JVM in HostArgsTest; D018 keeps
+         * the two in sync): llama.cpp counts the output head as a layer, so offload ngl+1, pin the head (and, for
+         * tied-embedding models, its token_embd duplicate) to CPU with one regex, split the (ngl+1) offloaded
+         * entries by worker layer counts with the extra head slot on the last worker, and pass `--fit off` so
+         * llama.cpp never re-fits the placement the planner calculated (D033).
          */
+        /** Pins the output head, its norm and (tied models) the token_embd duplicate to the host; same text as supervisor.rs. */
+        const val HEAD_PIN = "^(output|output_norm|token_embd)\\.(weight|bias)$=CPU"
+
         fun hostArgs(serverBin: String, modelPath: String, nCtx: Int, threads: Int, bindHost: String, workers: List<Pair<String, Int>>, workerLayers: List<Int>): List<String> {
             val ngl = workerLayers.sum()
-            val args = mutableListOf(serverBin, "-m", modelPath, "-c", "$nCtx", "-t", "$threads", "--host", bindHost, "--port", "8081", "--jinja", "--metrics", "--reasoning", "off")
+            val args = mutableListOf(serverBin, "-m", modelPath, "-c", "$nCtx", "-t", "$threads", "--host", bindHost, "--port", "8081", "--jinja", "--metrics", "--reasoning", "off", "--fit", "off")
             if (workers.isNotEmpty()) {
-                args += listOf("--rpc", workers.joinToString(",") { "${it.first}:${it.second}" }, "-ngl", "${ngl + 1}", "--override-tensor", "output\\.weight=CPU")
+                args += listOf("--rpc", workers.joinToString(",") { "${it.first}:${it.second}" }, "-ngl", "${ngl + 1}", "--override-tensor", HEAD_PIN)
                 if (workers.size > 1) {
                     val total = (ngl + 1).toDouble()
                     val split = workerLayers.mapIndexed { i, n -> (if (i == workerLayers.lastIndex) n + 1 else n) / total }

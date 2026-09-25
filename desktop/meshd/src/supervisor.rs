@@ -5,10 +5,18 @@
 //! device` debug output on 2026-09-24, see docs/MESHAI.md §12):
 //! * `--rpc a:p,b:p` registers remote devices, in that order, ahead of the CPU;
 //! * llama.cpp counts the output head as layer `n_layer`, so `-ngl N` offloads the last N of
-//!   (n_layer + 1) entries. We pass `ngl + 1` so exactly `ngl` real layers move, and pin
-//!   `output.weight` back to the host with `--override-tensor`;
+//!   (n_layer + 1) entries. We pass `ngl + 1` so exactly `ngl` real layers move, and pin the head
+//!   back to the host with `--override-tensor` (a regex, so it also catches tied-embedding
+//!   models where `output.weight` doesn't exist and the duplicate `token_embd.weight` would
+//!   otherwise land on the last worker unbudgeted, §17.3);
 //! * `--tensor-split f1,f2` places offloaded entries by cumulative fraction, so worker k gets
-//!   `layers_k / (ngl+1)` and the last worker one extra slot for the head entry.
+//!   `layers_k / (ngl+1)` and the last worker one extra slot for the head entry;
+//! * `--fit off`: meshd already fit the plan (planner.rs); without this, `--fit`'s default `on`
+//!   may silently adjust unset arguments, so the plan meshd calculated would stop being the plan
+//!   that runs (§17.3, D032);
+//! * `--no-mmproj-offload`: RPC devices register as GPU-type, so without this the projector (and
+//!   vision encoder) would offload to the first RPC worker in a split instead of staying in the
+//!   host process (§17.3).
 //!
 //! Lifecycle: `start` returns as soon as the plan is recorded and the background task is spawned;
 //! the task is tagged with a generation number and stops touching state once `stop` bumps it
@@ -55,6 +63,10 @@ pub fn derive_args(
         // Demo default: answer directly (Qwen3 thinking off, D017).
         "--reasoning".into(),
         "off".into(),
+        // The plan meshd calculated must be the plan that runs, not one --fit silently adjusts
+        // (D032, §17.3): meshd already fit weights + KV + compute reserve per device.
+        "--fit".into(),
+        "off".into(),
     ];
     if *mode == Mode::LayerSplit && !worker_addrs.is_empty() {
         args.push("--rpc".into());
@@ -68,7 +80,10 @@ pub fn derive_args(
         args.push("-ngl".into());
         args.push((ngl + 1).to_string());
         args.push("--override-tensor".into());
-        args.push("output\\.weight=CPU".into());
+        // Regex, not a literal name: a tied-embedding model (e.g. Qwen3-0.6B) has no
+        // `output.weight` tensor, so a bare `output\.weight=CPU` matches nothing and the head
+        // goes to the last worker unbudgeted. This also pins `output_norm.weight` (§17.3).
+        args.push("^(output|output_norm|token_embd)\\.(weight|bias)$=CPU".into());
         if worker_addrs.len() > 1 {
             let total = (ngl + 1) as f64;
             let split: Vec<String> = worker_layers
@@ -151,6 +166,10 @@ pub fn llama_args(st: &AppState, plan: &Plan) -> anyhow::Result<LlamaArgs> {
         if p.exists() {
             args.push("--mmproj".into());
             args.push(p.display().to_string());
+            // RPC devices register as GPU-type, so without this the projector (and vision
+            // encoder) would offload to the first RPC worker in a split instead of staying in
+            // the host process (§17.3, D032).
+            args.push("--no-mmproj-offload".into());
         }
     }
     Ok(LlamaArgs {
@@ -737,6 +756,11 @@ mod tests {
         assert_eq!(arg_after(&args, "-ngl"), Some("0"));
         assert!(!args.iter().any(|a| a == "--rpc"));
         assert_eq!(arg_after(&args, "--reasoning"), Some("off"));
+        assert_eq!(
+            arg_after(&args, "--fit"),
+            Some("off"),
+            "the plan meshd calculated must be the plan that runs (D032)"
+        );
     }
 
     #[test]
@@ -756,8 +780,10 @@ mod tests {
         );
         assert_eq!(
             arg_after(&args, "--override-tensor"),
-            Some("output\\.weight=CPU")
+            Some("^(output|output_norm|token_embd)\\.(weight|bias)$=CPU"),
+            "must also catch tied-embedding models (§17.3)"
         );
+        assert_eq!(arg_after(&args, "--fit"), Some("off"));
         assert_eq!(
             arg_after(&args, "--rpc"),
             Some("10.0.0.2:50052,10.0.0.3:50052")

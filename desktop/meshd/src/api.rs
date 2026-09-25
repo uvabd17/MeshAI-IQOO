@@ -16,7 +16,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use include_dir::{include_dir, Dir};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 static ADMIN: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../admin/src");
@@ -32,12 +32,19 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/api/catalog", get(api_catalog))
         .route("/api/runs", get(api_runs))
         .route("/api/models/file/{file}", get(api_model_file))
+        .route("/api/models/{file}/layers", get(api_model_layers))
         .route("/api/models/rescan", post(api_rescan))
         .route("/api/models/download", post(api_download))
         .route("/api/pair/offer", post(api_offer))
         .route("/api/usb", get(api_usb))
         .route("/api/usb/pair", post(api_usb_pair))
+        .route(
+            "/api/usb/{serial}/care",
+            get(api_usb_care_get).post(api_usb_care_post),
+        )
         .route("/api/plan", post(api_plan))
+        .route("/api/calculate", post(api_calculate))
+        .route("/api/feasibility", post(api_feasibility))
         .route("/api/run", post(api_run))
         .route("/api/stop", post(api_stop))
         .route("/api/devices/{id}", delete(api_forget))
@@ -213,7 +220,11 @@ async fn api_state(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
             }
         });
     }
-    Json(st.state_json(false))
+    let mut v = st.state_json(false);
+    v["advice"] = serde_json::json!(st.advice());
+    v["last_run"] = serde_json::json!(*st.last_run.read().unwrap());
+    v["run"]["resumable"] = serde_json::json!(st.resumable());
+    Json(v)
 }
 
 /// Coordinator → mirror push. Body: {"state": <stripped state>, "runs": [...]}. Bearer token required.
@@ -297,6 +308,20 @@ async fn api_download(State(st): State<Arc<AppState>>, Json(r): Json<DownloadReq
     match models::start_download(st, url, file).await {
         Ok(()) => Json(serde_json::json!({"ok": true})).into_response(),
         Err(e) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response(),
+    }
+}
+
+/// Placement units of a model file and the rules for combining them (T072, docs §17.3): the
+/// Calculate step reads per-block bytes, read-bytes and FLOPs per token from here.
+async fn api_model_layers(State(st): State<Arc<AppState>>, Path(file): Path<String>) -> Response {
+    if !models::valid_model_name(&file) {
+        return (StatusCode::BAD_REQUEST, "bad name").into_response();
+    }
+    let p = st.models_dir.join(&file);
+    match tokio::task::spawn_blocking(move || meshcore::gguf::read_full(&p)).await {
+        Ok(Ok(g)) => Json(meshcore::layers::layer_config(&g)).into_response(),
+        Ok(Err(e)) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -442,6 +467,268 @@ async fn adb(args: &[&str]) -> anyhow::Result<String> {
     Ok(text)
 }
 
+// ---------------------------------------------------------------------------------------------
+// USB care (T097, docs §20): the developer controls today's demo runbook applies to the phone by
+// hand over adb (dumpsys/appops/settings) — doze whitelist, background app-ops, stay-awake while
+// plugged in. NEVER touches the USB mode itself (K20: no `svc usb setFunctions` or anything that
+// changes what the cable presents).
+
+const WORKER_PKG: &str = "ai.meshai.worker";
+
+fn is_emulator_serial(serial: &str) -> bool {
+    serial.starts_with("emulator-")
+}
+
+fn bad_usb_serial(s: &str) -> bool {
+    s.is_empty()
+        || !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == ':' || c == '-' || c == '_')
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Toggle {
+    On,
+    Off,
+    Unknown,
+}
+impl Toggle {
+    fn as_str(self) -> &'static str {
+        match self {
+            Toggle::On => "on",
+            Toggle::Off => "off",
+            Toggle::Unknown => "unknown",
+        }
+    }
+}
+
+/// `adb shell dumpsys deviceidle whitelist` lists one entry per line, one of which names the
+/// package once it is whitelisted. Empty output (adb reachable but nothing returned) is Unknown,
+/// not Off — a real "not whitelisted" output still has other packages' lines in it.
+fn parse_doze_whitelist(out: &str, pkg: &str) -> Toggle {
+    if out.trim().is_empty() {
+        return Toggle::Unknown;
+    }
+    if out.lines().any(|l| l.contains(pkg)) {
+        Toggle::On
+    } else {
+        Toggle::Off
+    }
+}
+
+/// `adb shell appops get <pkg> <op>` prints a line like "RUN_ANY_IN_BACKGROUND: allow" (older
+/// builds may add "; time=...\u{2026}" after the mode — only the first word is read).
+fn parse_appop(out: &str) -> Toggle {
+    let Some(rest) = out.split(':').nth(1) else {
+        return Toggle::Unknown;
+    };
+    let mode = rest
+        .trim()
+        .split(|c: char| c == ';' || c.is_whitespace())
+        .next()
+        .unwrap_or("");
+    match mode {
+        "allow" | "foreground" => Toggle::On,
+        "ignore" | "deny" | "default" => Toggle::Off,
+        _ => Toggle::Unknown,
+    }
+}
+
+/// `adb shell settings get global stay_on_while_plugged_in` prints a bare integer bitmask
+/// (1=AC, 2=USB, 4=wireless) or the literal `null` string if the setting was never written.
+fn parse_stay_on_bitmask(out: &str) -> Option<i64> {
+    out.trim().parse::<i64>().ok()
+}
+
+/// `svc power stayon usb` writes the very same `Settings.Global.STAY_ON_WHILE_PLUGGED_IN` value
+/// (just with only the USB bit set), so both POST steps are verified from one read: `mask` picks
+/// which bit(s) each check cares about.
+fn toggle_from_bitmask(bits: Option<i64>, mask: i64) -> Toggle {
+    match bits {
+        Some(b) if b & mask != 0 => Toggle::On,
+        Some(_) => Toggle::Off,
+        None => Toggle::Unknown,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CareStatus {
+    doze_whitelist: &'static str,
+    run_any_in_background: &'static str,
+    run_in_background: &'static str,
+    stay_on_while_plugged_in: &'static str,
+    stayon_usb: &'static str,
+}
+
+/// Read-only: parses the phone's current state for every care step (T097's GET).
+async fn read_care(serial: &str) -> CareStatus {
+    let dw = adb(&["-s", serial, "shell", "dumpsys", "deviceidle", "whitelist"])
+        .await
+        .unwrap_or_default();
+    let ra = adb(&[
+        "-s",
+        serial,
+        "shell",
+        "appops",
+        "get",
+        WORKER_PKG,
+        "RUN_ANY_IN_BACKGROUND",
+    ])
+    .await
+    .unwrap_or_default();
+    let rb = adb(&[
+        "-s",
+        serial,
+        "shell",
+        "appops",
+        "get",
+        WORKER_PKG,
+        "RUN_IN_BACKGROUND",
+    ])
+    .await
+    .unwrap_or_default();
+    let so = adb(&[
+        "-s",
+        serial,
+        "shell",
+        "settings",
+        "get",
+        "global",
+        "stay_on_while_plugged_in",
+    ])
+    .await
+    .unwrap_or_default();
+    let bits = parse_stay_on_bitmask(&so);
+    CareStatus {
+        doze_whitelist: parse_doze_whitelist(&dw, WORKER_PKG).as_str(),
+        run_any_in_background: parse_appop(&ra).as_str(),
+        run_in_background: parse_appop(&rb).as_str(),
+        stay_on_while_plugged_in: toggle_from_bitmask(bits, 0b111).as_str(),
+        stayon_usb: toggle_from_bitmask(bits, 0b010).as_str(),
+    }
+}
+
+/// Applies the five care steps (T097's POST). Best-effort: one step's adb error is collected, not
+/// fatal to the rest, since some of these ops can fail on a locked-down build without blocking the
+/// others (e.g. MIUI autostart cannot be set from adb at all — a Settings tap, noted in §18.1).
+async fn apply_care(serial: &str) -> Vec<String> {
+    let steps: Vec<Vec<String>> = vec![
+        vec![
+            "-s".into(),
+            serial.into(),
+            "shell".into(),
+            "dumpsys".into(),
+            "deviceidle".into(),
+            "whitelist".into(),
+            format!("+{WORKER_PKG}"),
+        ],
+        vec![
+            "-s".into(),
+            serial.into(),
+            "shell".into(),
+            "appops".into(),
+            "set".into(),
+            WORKER_PKG.into(),
+            "RUN_ANY_IN_BACKGROUND".into(),
+            "allow".into(),
+        ],
+        vec![
+            "-s".into(),
+            serial.into(),
+            "shell".into(),
+            "appops".into(),
+            "set".into(),
+            WORKER_PKG.into(),
+            "RUN_IN_BACKGROUND".into(),
+            "allow".into(),
+        ],
+        vec![
+            "-s".into(),
+            serial.into(),
+            "shell".into(),
+            "settings".into(),
+            "put".into(),
+            "global".into(),
+            "stay_on_while_plugged_in".into(),
+            "7".into(),
+        ],
+        vec![
+            "-s".into(),
+            serial.into(),
+            "shell".into(),
+            "svc".into(),
+            "power".into(),
+            "stayon".into(),
+            "usb".into(),
+        ],
+    ];
+    let mut errors = Vec::new();
+    for args in &steps {
+        let argv: Vec<&str> = args.iter().map(|a| a.as_str()).collect();
+        if let Err(e) = adb(&argv).await {
+            errors.push(format!("{}: {e}", argv.join(" ")));
+        }
+    }
+    errors
+}
+
+/// GET /api/usb/{serial}/care (T097): on/off/unknown for every care step, read-only.
+async fn api_usb_care_get(Path(serial): Path<String>) -> Response {
+    if bad_usb_serial(&serial) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "bad serial"})),
+        )
+            .into_response();
+    }
+    if is_emulator_serial(&serial) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "refusing an emulator serial"})),
+        )
+            .into_response();
+    }
+    if adb_path().is_none() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": "adb not found (install Android platform-tools or set ANDROID_HOME)"})),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({"serial": serial, "care": read_care(&serial).await})).into_response()
+}
+
+/// POST /api/usb/{serial}/care (T097): applies the five steps, then reads them back so the
+/// response reflects the phone's real state rather than an optimistic assumption.
+async fn api_usb_care_post(Path(serial): Path<String>) -> Response {
+    if bad_usb_serial(&serial) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "bad serial"})),
+        )
+            .into_response();
+    }
+    if is_emulator_serial(&serial) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "refusing an emulator serial"})),
+        )
+            .into_response();
+    }
+    if adb_path().is_none() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": "adb not found (install Android platform-tools or set ANDROID_HOME)"})),
+        )
+            .into_response();
+    }
+    let errors = apply_care(&serial).await;
+    Json(
+        serde_json::json!({"ok": true, "serial": serial, "care": read_care(&serial).await, "errors": errors}),
+    )
+    .into_response()
+}
+
 /// Phones on USB debugging (real devices only; emulators are skipped). Empty when adb is absent.
 async fn api_usb() -> Json<serde_json::Value> {
     let Some(_) = adb_path() else {
@@ -566,7 +853,19 @@ async fn api_usb_pair(State(st): State<Arc<AppState>>, Json(r): Json<UsbPairReq>
             .into_response();
     }
     st.push_log(format!("USB pairing offered to {s}: confirm on the phone"));
-    Json(serde_json::json!({"ok": true, "serial": s, "host": "127.0.0.1", "note": "tap Join on the phone"})).into_response()
+    // T097: apply the developer controls (doze/background/stay-awake) right after the pairing
+    // intent, same session — one less manual adb pass on demo day.
+    let (care, care_errors): (Option<CareStatus>, Vec<String>) = if is_emulator_serial(&s) {
+        (None, vec!["skipped: emulator serial".into()])
+    } else {
+        let errors = apply_care(&s).await;
+        st.push_log(format!(
+            "USB care applied to {s}: {} of 5 steps ok",
+            5 - errors.len()
+        ));
+        (Some(read_care(&s).await), errors)
+    };
+    Json(serde_json::json!({"ok": true, "serial": s, "host": "127.0.0.1", "note": "tap Join on the phone", "care": care, "care_errors": care_errors})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -592,6 +891,30 @@ async fn api_plan(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Re
             Json(serde_json::json!({"error": e.to_string()})),
         )
             .into_response(),
+    }
+}
+
+/// The Calculate step (T074, §17.4): plan + layer config + measured history → stacks, prediction
+/// and verdicts. Never refuses: a plan that cannot be made comes back as `ok:false` with hints.
+async fn api_calculate(
+    State(st): State<Arc<AppState>>,
+    Json(r): Json<crate::calc::CalcReq>,
+) -> Response {
+    match tokio::task::spawn_blocking(move || crate::calc::calculate(&st, &r)).await {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Models step (T096, §20): every catalog model + every runnable file on disk, sorted into
+/// easy/hard/impossible against the mesh's current capacities. Never refuses.
+async fn api_feasibility(
+    State(st): State<Arc<AppState>>,
+    Json(r): Json<crate::calc::FeasReq>,
+) -> Response {
+    match tokio::task::spawn_blocking(move || crate::calc::feasibility(&st, &r)).await {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -636,6 +959,14 @@ async fn api_run(State(st): State<Arc<AppState>>, Json(r): Json<PlanReq>) -> Res
                     *bytes as f64 / 1e9
                 ));
             }
+            // Persisted only on accept (T098): a refusal — e.g. a device going offline mid-plan —
+            // must never erase what "Start again" would resume.
+            st.save_last_run(&crate::state::LastRun {
+                model: r.model.clone(),
+                n_ctx: r.n_ctx,
+                host: r.host.clone(),
+                ts_ms: crate::state::now_ms(),
+            });
             Json(serde_json::json!({"ok": true, "plan": plan, "credited": credits})).into_response()
         }
         Err(e) => (
@@ -798,5 +1129,68 @@ async fn api_bench(State(st): State<Arc<AppState>>, Json(r): Json<BenchReq>) -> 
             Json(serde_json::json!({"ok": o.status.success(), "prompt_tps": pp, "decode_tps": tg, "raw": v})).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod care_parser_tests {
+    use super::*;
+
+    #[test]
+    fn doze_whitelist_finds_the_package_or_says_off() {
+        let on = "  system,com.android.systemui,10005,244\n  user,ai.meshai.worker,10234,-1\n";
+        assert_eq!(parse_doze_whitelist(on, WORKER_PKG), Toggle::On);
+        let off = "  system,com.android.systemui,10005,244\n";
+        assert_eq!(parse_doze_whitelist(off, WORKER_PKG), Toggle::Off);
+        assert_eq!(parse_doze_whitelist("", WORKER_PKG), Toggle::Unknown);
+        assert_eq!(parse_doze_whitelist("   \n", WORKER_PKG), Toggle::Unknown);
+    }
+
+    #[test]
+    fn appop_reads_the_mode_word_ignoring_trailing_text() {
+        assert_eq!(parse_appop("RUN_ANY_IN_BACKGROUND: allow"), Toggle::On);
+        assert_eq!(
+            parse_appop("RUN_ANY_IN_BACKGROUND: allow; time=+0ms"),
+            Toggle::On
+        );
+        assert_eq!(parse_appop("RUN_IN_BACKGROUND: ignore"), Toggle::Off);
+        assert_eq!(parse_appop("RUN_IN_BACKGROUND: default"), Toggle::Off);
+        assert_eq!(parse_appop("no colon here"), Toggle::Unknown);
+        assert_eq!(
+            parse_appop("RUN_IN_BACKGROUND: something-new"),
+            Toggle::Unknown
+        );
+    }
+
+    #[test]
+    fn stay_on_bitmask_parses_or_reports_unknown() {
+        assert_eq!(parse_stay_on_bitmask("7"), Some(7));
+        assert_eq!(parse_stay_on_bitmask(" 2 \n"), Some(2));
+        assert_eq!(parse_stay_on_bitmask("null"), None);
+        assert_eq!(parse_stay_on_bitmask(""), None);
+    }
+
+    #[test]
+    fn stay_on_and_usb_bit_are_read_from_the_same_value() {
+        // settings put ... 7, then svc power stayon usb overwrites it to 2 (USB bit only) — both
+        // checks must still read "on" afterwards.
+        assert_eq!(toggle_from_bitmask(Some(7), 0b111), Toggle::On);
+        assert_eq!(toggle_from_bitmask(Some(7), 0b010), Toggle::On);
+        assert_eq!(toggle_from_bitmask(Some(2), 0b111), Toggle::On);
+        assert_eq!(toggle_from_bitmask(Some(2), 0b010), Toggle::On);
+        assert_eq!(toggle_from_bitmask(Some(1), 0b010), Toggle::Off); // AC only, no USB bit
+        assert_eq!(toggle_from_bitmask(Some(0), 0b111), Toggle::Off);
+        assert_eq!(toggle_from_bitmask(None, 0b111), Toggle::Unknown);
+    }
+
+    #[test]
+    fn emulator_and_malformed_serials_are_rejected() {
+        assert!(is_emulator_serial("emulator-5554"));
+        assert!(!is_emulator_serial("a71100074abe4acf"));
+        assert!(bad_usb_serial(""));
+        assert!(bad_usb_serial("../etc/passwd"));
+        assert!(bad_usb_serial("has space"));
+        assert!(!bad_usb_serial("a71100074abe4acf"));
+        assert!(!bad_usb_serial("192.168.1.7:5555"));
     }
 }

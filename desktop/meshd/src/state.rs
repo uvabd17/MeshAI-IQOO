@@ -170,6 +170,145 @@ pub struct Download {
     pub started_ms: u64,
 }
 
+/// One line of guidance for a device's dashboard card (T096, docs §17.4/§20): plain, short, and
+/// computed cheaply in `api_state` from a snapshot of what the device last reported. `action` is
+/// an optional short tag the panel can hang a button off (e.g. "measure_link"); most rules have
+/// none.
+#[derive(Debug, Clone, Serialize)]
+pub struct Advice {
+    pub device_id: String,
+    pub level: &'static str, // info | warn | fail
+    pub text: String,
+    pub action: Option<&'static str>,
+}
+
+fn advice(
+    device_id: &str,
+    level: &'static str,
+    text: impl Into<String>,
+    action: Option<&'static str>,
+) -> Advice {
+    Advice {
+        device_id: device_id.into(),
+        level,
+        text: text.into(),
+        action,
+    }
+}
+
+/// What a device last reported, trimmed to exactly what the advice rules need — pure and easy to
+/// unit test without a live `AppState`.
+#[derive(Debug, Clone, Default)]
+pub struct DeviceSnapshot {
+    pub device_id: String,
+    pub kind: Option<DeviceKind>,
+    pub is_local: bool,
+    pub online: bool,
+    pub addr: Option<String>,
+    pub avail_bytes: u64,
+    pub battery_pct: f32,
+    pub charging: bool,
+    pub rtt_ms_p95: f32,
+    /// Only meaningful for the local device: a llama.cpp child meshd itself started is still
+    /// alive while the run is idle.
+    pub stray_llama: bool,
+}
+
+/// Pure advice rules (T096, docs §20) over one device's snapshot. Real phones and the laptop only
+/// — simulated phones (`kind: Sim`, or `kind: None` for an unknown/offline entry) never earn
+/// advice, since there is nothing on a sim the user could act on.
+pub fn device_advice(d: &DeviceSnapshot) -> Vec<Advice> {
+    let mut out = Vec::new();
+    if d.is_local {
+        if d.online && d.avail_bytes > 0 && d.avail_bytes < 4_000_000_000 {
+            out.push(advice(
+                &d.device_id,
+                "warn",
+                format!(
+                    "Close heavy apps on the laptop: it has {:.1} GB available.",
+                    d.avail_bytes as f64 / 1e9
+                ),
+                Some("close_apps"),
+            ));
+        }
+        if d.stray_llama {
+            out.push(advice(
+                &d.device_id,
+                "warn",
+                "A llama process is still running while idle — stop it before starting a new run.",
+                Some("stop_run"),
+            ));
+        }
+        return out;
+    }
+    if d.kind != Some(DeviceKind::Phone) {
+        return out; // sims and anything else earn no advice
+    }
+    if !d.online {
+        out.push(advice(
+            &d.device_id,
+            "warn",
+            "Open the MeshAI app on the phone and keep it in front.",
+            Some("open_app"),
+        ));
+        return out; // nothing else is known about an offline phone
+    }
+    if !d.charging {
+        out.push(advice(
+            &d.device_id,
+            "info",
+            "Plug it in to keep it available for long runs.",
+            Some("plug_in"),
+        ));
+    }
+    if d.battery_pct > 0.0 && d.battery_pct < 30.0 {
+        out.push(advice(
+            &d.device_id,
+            "warn",
+            "Battery below 30% — plug it in soon.",
+            Some("plug_in"),
+        ));
+    }
+    if d.avail_bytes > 0 && d.avail_bytes < 1_500_000_000 {
+        out.push(advice(
+            &d.device_id,
+            "warn",
+            format!(
+                "Close apps on the phone: it offers {:.1} GB right now.",
+                d.avail_bytes as f64 / 1e9
+            ),
+            Some("close_apps"),
+        ));
+    }
+    if d.rtt_ms_p95 > 60.0 {
+        out.push(advice(
+            &d.device_id,
+            "warn",
+            "Use a cable, USB tethering or a hotspot instead of shared Wi-Fi.",
+            Some("tether"),
+        ));
+    }
+    if d.addr.as_deref() == Some("127.0.0.1") {
+        out.push(advice(
+            &d.device_id,
+            "warn",
+            "The USB-debugging cable is slow for splits (\u{2248}1 tok/s): turn on USB tethering in the phone's Settings.",
+            Some("tether"),
+        ));
+    }
+    out
+}
+
+/// The last run intent meshd accepted (T098, docs §20): persisted so the panel can offer "Start
+/// again" after a restart, even though the live run state itself does not survive one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LastRun {
+    pub model: String,
+    pub n_ctx: u32,
+    pub host: Option<String>,
+    pub ts_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRow {
     pub ts_ms: u64,
@@ -187,6 +326,11 @@ pub struct RunRow {
     pub ok: bool,
     #[serde(default)]
     pub streaming: bool,
+    /// Link kind of the run's workers: "local" (single device), "cable" (a worker reached through
+    /// the adb relay at 127.0.0.1), "lan" (Wi-Fi / tethering / hotspot). Empty in rows written
+    /// before 25 Sep 2026 (those splits were all over the cable).
+    #[serde(default)]
+    pub link: String,
 }
 
 pub struct AppState {
@@ -227,6 +371,8 @@ pub struct AppState {
     pub mirror: RwLock<Option<(serde_json::Value, serde_json::Value)>>,
     pub mirror_token: RwLock<Option<String>>,
     pub push_to: RwLock<Option<(String, String)>>, // (base url, token)
+    /// The last run intent `/api/run` accepted (T098); survives a restart via `state/last_run.json`.
+    pub last_run: RwLock<Option<LastRun>>,
 }
 
 pub fn now_ms() -> u64 {
@@ -281,9 +427,11 @@ impl AppState {
             mirror: RwLock::new(None),
             mirror_token: RwLock::new(None),
             push_to: RwLock::new(None),
+            last_run: RwLock::new(None),
         };
         s.load_runs();
         s.load_paired();
+        s.load_last_run();
         s
     }
 
@@ -441,6 +589,14 @@ impl AppState {
                     continue;
                 }
                 match meshcore::gguf::read(&p) {
+                    // A GGUF without transformer blocks (a stable-diffusion checkpoint, a vocoder…)
+                    // is not something llama-server can run; other engines will list it (D034).
+                    Ok(info) if info.n_layer == 0 || !is_chat_arch(&info.arch) => {
+                        tracing::info!(
+                            "scan: {file} is not a chat model (arch {}), skipped — it needs its own engine (D034)",
+                            info.arch
+                        );
+                    }
                     Ok(info) => out.push(ModelEntry {
                         file,
                         info,
@@ -542,6 +698,81 @@ impl AppState {
         }
     }
 
+    fn last_run_path(&self) -> PathBuf {
+        self.state_dir.join("last_run.json")
+    }
+    /// Persist the run intent `/api/run` just accepted (T098) so a restarted meshd can still offer
+    /// "Start again". Best-effort: a write failure is logged, never fatal to the run itself.
+    pub fn save_last_run(&self, lr: &LastRun) {
+        *self.last_run.write().unwrap() = Some(lr.clone());
+        let _ = std::fs::create_dir_all(&self.state_dir);
+        match serde_json::to_string_pretty(lr) {
+            Ok(s) => {
+                if let Err(e) = std::fs::write(self.last_run_path(), s) {
+                    tracing::warn!("could not persist last_run.json: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("could not serialise last_run: {e}"),
+        }
+    }
+    fn load_last_run(&self) {
+        if let Ok(s) = std::fs::read_to_string(self.last_run_path()) {
+            if let Ok(lr) = serde_json::from_str::<LastRun>(&s) {
+                *self.last_run.write().unwrap() = Some(lr);
+            }
+        }
+    }
+    /// Is the persisted last run's model still on disk? (`run.resumable` in `/api/state`.)
+    pub fn resumable(&self) -> bool {
+        self.last_run
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|lr| self.model(&lr.model).is_some())
+    }
+
+    /// A llama.cpp child meshd itself started (host or local worker) is still alive while the run
+    /// is idle — a crash or a missed cleanup left it behind (T096 advice rule). Cheap: at most two
+    /// PID checks, and only while idle.
+    pub fn stray_llama(&self) -> bool {
+        if self.run.read().unwrap().status != "idle" {
+            return false;
+        }
+        if let Some(pid) = *self.host_pid.lock().unwrap() {
+            if process_alive(pid) {
+                return true;
+            }
+        }
+        self.local_worker.lock().unwrap().is_some()
+    }
+
+    /// Advice lines for every device (T096, docs §20): plugged in, close apps, the demo-critical
+    /// cable warning, an offline-but-paired phone. Cheap — no I/O beyond what `/api/state` reads
+    /// anyway.
+    pub fn advice(&self) -> Vec<Advice> {
+        let stray = self.stray_llama();
+        self.devices
+            .read()
+            .unwrap()
+            .values()
+            .flat_map(|d| {
+                let t = d.telemetry.as_ref();
+                device_advice(&DeviceSnapshot {
+                    device_id: d.id.clone(),
+                    kind: Some(d.kind.clone()),
+                    is_local: d.is_local,
+                    online: d.online,
+                    addr: d.addr.clone(),
+                    avail_bytes: t.map(|t| t.avail_bytes).unwrap_or(0),
+                    battery_pct: t.map(|t| t.battery_pct).unwrap_or(0.0),
+                    charging: t.map(|t| t.charging).unwrap_or(true),
+                    rtt_ms_p95: t.map(|t| t.rtt_ms_p95).unwrap_or(0.0),
+                    stray_llama: d.is_local && stray,
+                })
+            })
+            .collect()
+    }
+
     // ---------- planning ----------
     pub fn make_plan(
         &self,
@@ -562,6 +793,7 @@ impl AppState {
             .collect();
         let mut pol = self.policy.read().unwrap().clone();
         pol.prefer_host = prefer_host;
+        pol.host_extra_bytes = self.projector_bytes(&m.file);
         let mut plan = planner::plan(&m.info, &caps, n_ctx, &pol)?;
         plan.model = m.file.clone(); // the file name is the stable id across coordinator and phones
         Ok(plan)
@@ -637,7 +869,9 @@ impl AppState {
                     return cap;
                 };
                 let held = dev.telemetry.as_ref().map(|t| t.held_bytes).unwrap_or(0);
-                let credit = p.bytes.min(held);
+                // The run's compute buffers are anonymous memory too, so the credit may cover the
+                // placement's bytes plus its reserve (never more than what is really held).
+                let credit = (p.bytes + p.compute_reserve_bytes).min(held);
                 if credit > 0 {
                     cap.usable_bytes = cap.usable_bytes.saturating_add(credit);
                     credits.push((dev.id.clone(), credit));
@@ -663,6 +897,19 @@ impl AppState {
         pids.into_iter().map(rss_anon_of).sum()
     }
 
+    /// Size of the vision projector the supervisor will pass with `--mmproj` for this model (0 for
+    /// text models or when the projector file is missing). It stays in the host process
+    /// (`--no-mmproj-offload`), so the planner budgets it on the host (D033, reviewer MEDIUM-3).
+    pub fn projector_bytes(&self, model_file: &str) -> u64 {
+        crate::models::catalog()
+            .into_iter()
+            .find(|c| c.file == model_file)
+            .and_then(|c| c.mmproj)
+            .and_then(|mm| std::fs::metadata(self.models_dir.join(mm)).ok())
+            .map(|md| md.len())
+            .unwrap_or(0)
+    }
+
     /// Plan a replacement run against credited capacities (see `credited_caps`).
     pub fn make_plan_credited(
         &self,
@@ -676,6 +923,7 @@ impl AppState {
         let (caps, credits) = self.credited_caps();
         let mut pol = self.policy.read().unwrap().clone();
         pol.prefer_host = prefer_host;
+        pol.host_extra_bytes = self.projector_bytes(&m.file);
         let mut plan = planner::plan(&m.info, &caps, n_ctx, &pol)?;
         plan.model = m.file.clone();
         Ok((plan, credits))
@@ -711,7 +959,40 @@ impl AppState {
             *self.runs.write().unwrap() = rows;
         }
     }
-    pub fn record_run(&self, row: RunRow) {
+    /// Link kind of the current plan's workers (see `RunRow::link`).
+    pub fn current_link_kind(&self) -> String {
+        let plan = self.plan.read().unwrap();
+        let devs = self.devices.read().unwrap();
+        let mut kind = "local";
+        if let Some(p) = plan.as_ref() {
+            for pl in p
+                .placements
+                .iter()
+                .filter(|x| x.role == planner::Role::Worker)
+            {
+                let addr = devs.get(&pl.device_id).and_then(|d| d.addr.clone());
+                kind = if addr.as_deref() == Some("127.0.0.1") {
+                    "cable"
+                } else if devs
+                    .get(&pl.device_id)
+                    .is_some_and(|d| d.id.starts_with("sim-"))
+                {
+                    "loopback"
+                } else {
+                    "lan"
+                };
+                if kind == "cable" {
+                    break;
+                }
+            }
+        }
+        kind.into()
+    }
+
+    pub fn record_run(&self, mut row: RunRow) {
+        if row.link.is_empty() {
+            row.link = self.current_link_kind();
+        }
         if let Ok(line) = serde_json::to_string(&row) {
             let _ = std::fs::create_dir_all(&self.state_dir);
             use std::io::Write;
@@ -834,6 +1115,15 @@ impl AppState {
         }
         v
     }
+}
+
+/// Architectures `llama-server` can chat with. Speech-out models (`qwen3tts`, served by
+/// `llama-tts`) and anything else without a chat path are left to their own engine (D034).
+pub fn is_chat_arch(arch: &str) -> bool {
+    !matches!(
+        arch,
+        "qwen3tts" | "outetts" | "wavtokenizer-dec" | "unknown"
+    )
 }
 
 /// Stable, non-reversible short id for the public mirror.
@@ -1041,6 +1331,7 @@ mod credit_tests {
             layer_end: 0,
             bytes,
             split_weight: 0.0,
+            compute_reserve_bytes: 0,
             reason: String::new(),
         }
     }
@@ -1241,6 +1532,125 @@ mod credit_tests {
 }
 
 #[cfg(test)]
+mod advice_tests {
+    use super::*;
+
+    fn phone() -> DeviceSnapshot {
+        DeviceSnapshot {
+            device_id: "phone".into(),
+            kind: Some(DeviceKind::Phone),
+            is_local: false,
+            online: true,
+            addr: Some("192.168.1.7".into()),
+            avail_bytes: 3_000_000_000,
+            battery_pct: 80.0,
+            charging: true,
+            rtt_ms_p95: 5.0,
+            stray_llama: false,
+        }
+    }
+
+    #[test]
+    fn a_healthy_phone_earns_no_advice() {
+        assert!(device_advice(&phone()).is_empty());
+    }
+
+    #[test]
+    fn offline_phone_gets_one_line_and_nothing_else() {
+        let mut d = phone();
+        d.online = false;
+        let a = device_advice(&d);
+        assert_eq!(a.len(), 1);
+        assert!(a[0].text.contains("Open the MeshAI app"));
+    }
+
+    #[test]
+    fn not_charging_and_low_battery_both_fire() {
+        let mut d = phone();
+        d.charging = false;
+        d.battery_pct = 25.0;
+        let a = device_advice(&d);
+        assert_eq!(a.len(), 2);
+        assert!(a.iter().any(|x| x.text.contains("Plug it in")));
+        assert!(a.iter().any(|x| x.text.contains("Battery below 30%")));
+    }
+
+    #[test]
+    fn low_memory_names_the_gb_offered() {
+        let mut d = phone();
+        d.avail_bytes = 800_000_000;
+        let a = device_advice(&d);
+        assert_eq!(a.len(), 1);
+        assert!(a[0].text.contains("0.8 GB"), "{}", a[0].text);
+        assert_eq!(a[0].level, "warn");
+    }
+
+    #[test]
+    fn high_rtt_suggests_a_cable_or_tethering() {
+        let mut d = phone();
+        d.rtt_ms_p95 = 90.0;
+        let a = device_advice(&d);
+        assert_eq!(a.len(), 1);
+        assert!(a[0].text.contains("cable, USB tethering or a hotspot"));
+    }
+
+    #[test]
+    fn adb_relay_address_warns_about_the_cable_speed() {
+        let mut d = phone();
+        d.addr = Some("127.0.0.1".into());
+        let a = device_advice(&d);
+        assert_eq!(a.len(), 1);
+        assert!(a[0].text.contains("USB tethering"));
+    }
+
+    #[test]
+    fn sim_devices_earn_no_advice() {
+        let mut d = phone();
+        d.kind = Some(DeviceKind::Sim);
+        d.charging = false;
+        d.avail_bytes = 100_000_000;
+        assert!(device_advice(&d).is_empty());
+    }
+
+    #[test]
+    fn laptop_low_memory_and_stray_process_both_fire() {
+        let d = DeviceSnapshot {
+            device_id: "local".into(),
+            kind: Some(DeviceKind::Laptop),
+            is_local: true,
+            online: true,
+            addr: None,
+            avail_bytes: 2_000_000_000,
+            battery_pct: 100.0,
+            charging: true,
+            rtt_ms_p95: 0.0,
+            stray_llama: true,
+        };
+        let a = device_advice(&d);
+        assert_eq!(a.len(), 2);
+        assert!(a.iter().any(|x| x.text.contains("Close heavy apps")));
+        assert!(a.iter().any(|x| x.text.contains("llama process")));
+    }
+
+    #[test]
+    fn healthy_laptop_earns_no_advice() {
+        let d = DeviceSnapshot {
+            device_id: "local".into(),
+            kind: Some(DeviceKind::Laptop),
+            is_local: true,
+            online: true,
+            addr: None,
+            avail_bytes: 12_000_000_000,
+            battery_pct: 100.0,
+            charging: true,
+            rtt_ms_p95: 0.0,
+            stray_llama: false,
+        };
+        assert!(device_advice(&d).is_empty());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1283,6 +1693,7 @@ mod tests {
             prompt_tps: 1.0,
             ok: true,
             streaming: true,
+            link: String::new(),
         });
         let s = st.state_json(true).to_string() + &st.runs_json(true).to_string();
         let ipv4 = regex_lite_find_ipv4(&s);

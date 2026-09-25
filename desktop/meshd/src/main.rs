@@ -7,6 +7,7 @@
 //! `meshd worker`  run this machine as a pure compute worker (ggml-rpc-server) for a phone host
 
 mod api;
+mod calc;
 mod control;
 mod models;
 mod proxy;
@@ -73,6 +74,13 @@ enum Cmd {
         /// Add simulated phones, e.g. --sim 8.5,8.5 (usable GB each)
         #[arg(long)]
         sim: Option<String>,
+    },
+    /// Print a model's placement units — what can be combined with what (T072, docs §17.3).
+    Layers {
+        /// GGUF file name in the models dir, or a path
+        model: String,
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
     Worker {
         #[arg(long, default_value_t = meshcore::RPC_PORT)]
@@ -171,6 +179,20 @@ async fn main() -> anyhow::Result<()> {
                 "{}",
                 serde_json::to_string_pretty(&supervisor::llama_args(&st, &plan)?)?
             );
+        }
+        Cmd::Layers { model, json } => {
+            let p = if std::path::Path::new(model).exists() {
+                PathBuf::from(model)
+            } else {
+                cli.models.join(model)
+            };
+            let g = meshcore::gguf::read_full(&p)?;
+            let c = meshcore::layers::layer_config(&g);
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&c)?);
+            } else {
+                print!("{}", meshcore::layers::summary(&c));
+            }
         }
         Cmd::Worker { port, threads } => {
             let bind = local_ip_address::local_ip()

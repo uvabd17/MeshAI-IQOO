@@ -32,10 +32,10 @@
       "id": "V004",
       "name": "cargo test (meshcore + meshd)",
       "cmd": "cd desktop && cargo test",
-      "covers": "gguf parser on real file, planner rules, framing, pairing secrets, llama arg derivation (ngl+1/tensor-split), model name validation, control-plane heartbeat/reconnect over a real socket (tokio), planner device growth",
-      "last_run": "2026-09-24",
+      "covers": "gguf parser on real file, planner rules, framing, pairing secrets, llama arg derivation (ngl+1/tensor-split), model name validation, control-plane heartbeat/reconnect over a real socket (tokio), planner device growth, feasibility category rules (T096), advice rules (T096), USB care parsers (T097)",
+      "last_run": "2026-09-25 14:07",
       "status": "PASS",
-      "evidence": "38 passed (15 meshcore incl. D027 host-capability tests + 23 meshd) 11:12 IST; clippy clean; cargo check x86_64-pc-windows-gnu clean (in verify)"
+      "evidence": "2026-09-25 14:07: cargo test 71 passed (27 meshcore + 44 meshd, incl. 7 calc::feasibility_tests, 8 state::advice_tests, 5 api::care_parser_tests), cargo fmt --check and clippy --all-targets -D warnings clean"
     },
     {
       "id": "V005",
@@ -51,9 +51,9 @@
       "name": "browser-driven admin QA",
       "cmd": "node ~/.claude/skills/browser-automation/browser.mjs http://localhost:8080/admin/ --script scripts/qa/admin-qa.mjs",
       "covers": "T031: plan preview, Run, ready, layer map, chat + timings, analytics, QR, catalog",
-      "last_run": "2026-09-24",
+      "last_run": "2026-09-25 13:06",
       "status": "PASS",
-      "evidence": "PASS 04:53 IST (round-11 build): all views; chat 201 ms TTFT / 22.7 tok/s / 34 tok; 0 console errors, 0 failed requests"
+      "evidence": "2026-09-25 13:06: scripts/qa/admin-qa.mjs against the live meshd :8080 with a simulated phone: step1/step2/step3 rendered, verdict ok, tiles tagged, refused plan shows fix hints; 2 expected 422s from fit badges under a memory cap; screenshots admin-step*.png in the scratchpad"
     },
     {
       "id": "V007",
@@ -108,6 +108,22 @@
       "last_run": "2026-09-24",
       "status": "PASS",
       "evidence": "PASS 04:53 IST (round-11 build, run-guards.sh ALL OK, 32 checks): refusals (--lan, n_ctx, unknown model, 8B shortfall) 422 with the run still ready and the plan_id read BEFORE the request unchanged and non-null; replacement path with the laptop MEASURED: immediate re-run during loading → credited=[]; after ready the ctx-4096 re-run credited local 293,187,584 B == RssAnon+RssShmem of the llama-server read independently from /proc (placement 868,376,576 B); D024 premise measured: ctx-8192 laptop-alone run credited 997,859,328 B and the stop released 1,133,116,416 B of MemAvailable (avg of 3 samples each side; within the 30 % tolerance, and in the safe direction — more released than credited); forget member → error, device removed. Not shown on hardware: the phone's held_bytes path and a case where the credit flips the planner's answer (unit tests only)"
+    },
+    {
+      "id": "V018",
+      "name": "llama-server accepts the new arguments on a real start (--fit off, --no-mmproj-offload, head-pin regex) and the tied head lands on the CPU (T079)",
+      "status": "PASS",
+      "evidence": "2026-09-25 12:44: llama-server (66fba63) started with --fit off, --rpc 127.0.0.1:50099, -ngl 15, --override-tensor '^(output|output_norm|token_embd)\\.(weight|bias)$=CPU' on Qwen3-0.6B-Q8_0 (tied embeddings) + a local ggml-rpc-server (-t 2): /health ok; log: 'tensor token_embd.weight (157 MiB q8_0) buffer type overridden to CPU' ×2 (input + tied head duplicate) and output_norm.weight overridden to CPU; layers 0–13 CPU, 14–27 RPC0; CPU_Mapped model buffer 380.90 MiB, RPC0 model buffer 223.25 MiB (layers only — the head is NOT on the worker), KV 112 MiB per device, compute buffers CPU 28.01 MiB / RPC0 24.01 MiB. Scratchpad log t079-host.log.",
+      "last_run": "2026-09-25 12:44"
+    },
+    {
+      "id": "V019",
+      "name": "feasibility / advice / USB care / resume — live curl against :8080 (T096/T097/T098 meshd half)",
+      "cmd": "curl against a live meshd --lan with MESHAI_API_TOKEN, plus POST /api/sim/workers for the phone-pool cases",
+      "covers": "T096, T097, T098 (meshd half)",
+      "last_run": "2026-09-25 14:05",
+      "status": "PASS",
+      "evidence": "2026-09-25: POST /api/feasibility with 0 phones — on-disk models (Qwen3-0.6B/8B, Qwen2.5-VL-3B, plus non-catalog ASR/TTS files) 'easy' with a measured/derived est_tok_s, off-disk gpt-oss-20b/Qwen3-Coder-30B 'impossible' with download+device needs and a printed deficit (short 5.75 GB / 12.25 GB); with a 2 GB sim phone gpt-oss-20b stays impossible (short 3.75 GB, matches the bigger pool); with an 8 GB sim it flips to 'hard' split across 2 devices with a free_memory need on the laptop; sims removed after (POST n:0). GET /api/state advice: the paired-but-offline real phone (a71100074abe4acf) produced exactly one 'Open the MeshAI app...' line. USB care: GET/POST against the offline real phone returned every field 'unknown' with adb's own 'device not found' in care_errors (parser path only, phone confirmed offline per the task); GET/POST against the attached emulator-5556 refused HTTP 400 before any adb call (log tail confirms no adb invocation for it). Resume: POST /api/run Qwen3-0.6B ctx=2048 → state/last_run.json written, /api/state last_run + run.resumable:true; chatted through the live run (v1/chat/completions answered 'OK', ~6.9 tok/s decode); POST /api/run with a nonexistent model refused 422 and left last_run.json/last_run/the live 'ready' run untouched; POST /api/stop → status idle, resumable stayed true, no stray-llama advice (clean stop)."
     }
   ]
 }

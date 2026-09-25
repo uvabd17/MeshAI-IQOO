@@ -1,5 +1,6 @@
 package ai.meshai.worker
 
+import ai.meshai.worker.core.AutoJoin
 import ai.meshai.worker.core.LlamaRunner
 import ai.meshai.worker.core.MeshService
 import ai.meshai.worker.core.MeshState
@@ -10,8 +11,10 @@ import ai.meshai.worker.ui.MeshTheme
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -37,10 +40,20 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33) wanted += "android.permission.POST_NOTIFICATIONS"
         perms.launch(wanted.toTypedArray())
         offerFromIntent(intent)
-        // Already paired earlier? Reconnect by ourselves — no scan, no tap (the secret is ours).
-        if (intent?.getStringExtra(EXTRA_PAYLOAD) == null) {
-            getSharedPreferences("meshai", Context.MODE_PRIVATE).getString("last_payload", null)?.let { MeshService.join(this, it) }
-        }
+        refreshKeepAlive()
+        // Already paired earlier? Reconnect by ourselves — no scan, no tap (the secret is ours). Guarded so
+        // this never races a payload the user still has to confirm, and never starts a second job to a mesh
+        // we're already live on (a superseded ControlClient job used to hold a silent link until meshd
+        // dropped it 45 s later, taking the healthy connection's llama.cpp process down with it).
+        val savedPayload = getSharedPreferences("meshai", Context.MODE_PRIVATE).getString("last_payload", null)
+        val ui = MeshState.ui.value
+        val autoJoin = AutoJoin.shouldAutoJoin(
+            hasIntentPayload = intent?.getStringExtra(EXTRA_PAYLOAD) != null,
+            pendingJoinShown = ui.pendingJoin != null,
+            liveMeshId = ui.meshId.takeIf { ui.connected },
+            savedMeshId = savedPayload?.let { PairingPayload.parse(it)?.meshId },
+        )
+        if (autoJoin) { savedPayload?.let { MeshService.join(this, it) } }
         setContent {
             MeshTheme {
                 val s by MeshState.ui.collectAsState()
@@ -53,6 +66,8 @@ class MainActivity : ComponentActivity() {
                     onLeave = { MeshService.leave(this) },
                     onStop = { MeshService.stopProcess(this) },
                     onBench = ::bench,
+                    onRequestNoBatteryRestriction = ::requestNoBatteryRestriction,
+                    onOpenAppSettings = ::openAppSettings,
                 )
             }
         }
@@ -61,6 +76,31 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         offerFromIntent(intent)
+    }
+
+    /** These are only ever changed from Settings, outside the app, so a fresh read on every resume
+     *  (e.g. coming back from the Settings screen the two buttons below open) is enough (T098). */
+    override fun onResume() {
+        super.onResume()
+        refreshKeepAlive()
+    }
+
+    private fun refreshKeepAlive() {
+        val k = Profiler(this).keepAlive()
+        MeshState.set { it.copy(batteryUnrestricted = k.batteryUnrestricted, stayOnWhilePluggedIn = k.stayOnWhilePluggedIn, screenTimeoutMin = k.screenTimeoutMin) }
+    }
+
+    /** ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is allowed without a runtime prompt for a foreground-service
+     *  app holding REQUEST_IGNORE_BATTERY_OPTIMIZATIONS (manifest); the system still shows its own confirm dialog. */
+    private fun requestNoBatteryRestriction() {
+        val i = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+        runCatching { startActivity(i) }.onFailure { Toast.makeText(this, "Could not open the battery settings", Toast.LENGTH_SHORT).show() }
+    }
+
+    /** Autostart (MIUI/HyperOS) has no public read or write API — send the user to the app's own info page. */
+    private fun openAppSettings() {
+        val i = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+        runCatching { startActivity(i) }.onFailure { Toast.makeText(this, "Could not open app settings", Toast.LENGTH_SHORT).show() }
     }
 
     /**

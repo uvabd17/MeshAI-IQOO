@@ -6,8 +6,10 @@
 //! * [`framing`]  length-prefixed protobuf frames for the control stream
 //! * [`pairing`]  one-time token pairing (v1: token proof on a private link)
 
+pub mod cost;
 pub mod framing;
 pub mod gguf;
+pub mod layers;
 pub mod pairing;
 pub mod planner;
 

@@ -13,3 +13,9 @@ third_party/
 android/app/src/main/jniLibs/
 state/paired.json
 state/runs.jsonl
+
+# build output and checkouts live on /mnt/storage via symlinks (25 Sep 2026)
+/desktop/target
+/third_party
+state/last_run.json
+state/alpha-experiment.csv

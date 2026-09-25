@@ -72,6 +72,8 @@ class MeshService : Service() {
         }
         MeshState.set { it.copy(threads = profiler.workerThreads(), cpusAllowed = profiler.cpusAllowed(), tier = profiler.tier().name.removePrefix("TIER_"), coreCaps = profiler.cores().map { c -> c.second }, socName = if (android.os.Build.VERSION.SDK_INT >= 31) "${android.os.Build.SOC_MANUFACTURER} ${android.os.Build.SOC_MODEL}" else android.os.Build.HARDWARE, osName = "Android ${android.os.Build.VERSION.RELEASE}") }
         if (!runner.available) MeshState.log("⚠ llama.cpp binaries missing from this build (jniLibs)")
+        // What is already on disk from a previous run, shown before any plan arrives (T098: "come back and reuse").
+        refreshCacheStats()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -89,6 +91,13 @@ class MeshService : Service() {
     /** Tell the coordinator about a failed process or a refused plan (round-3 #2/L2). */
     private fun report(job: String, ok: Boolean, note: String, planId: String) =
         client.notify(envelope { jobResult = jobResult { jobId = job; this.ok = ok; output = note.toByteArray().toByteString(); this.planId = planId } })
+
+    /** Re-stat the RPC tensor cache and publish it to the Mesh tab / recovery banner (T098). */
+    private fun refreshCacheStats(): CacheStats {
+        val c = runner.rpcCacheStats()
+        MeshState.set { it.copy(rpcCacheBytes = c.bytes, rpcCacheFiles = c.files) }
+        return c
+    }
 
     /**
      * Stop from the phone's own UI (round-6 #3): kill/disarm now, cancel the plan being applied (a host download
@@ -151,7 +160,7 @@ class MeshService : Service() {
             updateNotification("Host: ${plan.modelFile}")
             try {
                 val coord = plan.coordinator.ifEmpty { MeshState.ui.value.coordinator.substringBefore(':') + ":8080" }
-                val file = runner.ensureModel("http://$coord", plan.modelFile)
+                val file = runner.ensureModel("http://$coord", plan.modelFile, plan.modelSha)
                 kotlinx.coroutines.currentCoroutineContext().ensureActive() // a stop/link loss during the download must not start the host
                 val workers = plan.placementsList.filter { it.used && !it.isHost }
                 val r = runner.startHost(bind, file, plan.nCtx, threads, workers.map { it.addr to it.rpcPort }, workers.map { it.layerEnd - it.layerStart }, plan.planId)
@@ -171,8 +180,19 @@ class MeshService : Service() {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 when (runner.startWorker(bind, port, threads, plan.planId)) {
                     LlamaRunner.Start.STARTED -> {
-                        if (waitListening(bind, port)) { started = true; MeshState.log("worker listening on $bind:$port"); MeshState.set { it.copy(workerReady = true) }
-                            client.notify(envelope { jobProgress = jobProgress { jobId = "worker"; fraction = 1f; note = "listening:$bind:$port"; this.planId = plan.planId } }); break }
+                        if (waitListening(bind, port)) {
+                            started = true
+                            val cache = refreshCacheStats() // what this worker will reuse, reported before it can grow (T098)
+                            MeshState.log("worker listening on $bind:$port${CacheSummary.jobProgressSuffix(cache.bytes, cache.files)}")
+                            MeshState.set { it.copy(workerReady = true) }
+                            // control.rs pulls the port out of this exact "listening:host:port" note with
+                            // rsplit(':').next() — a "cache: N MB" suffix here would poison that parse with an
+                            // extra colon, so the cache summary goes in its own JobProgress instead (job_id
+                            // "worker" is reserved for the port report; any other id is just logged on the laptop).
+                            client.notify(envelope { jobProgress = jobProgress { jobId = "worker"; fraction = 1f; note = "listening:$bind:$port"; this.planId = plan.planId } })
+                            if (cache.bytes > 0) client.notify(envelope { jobProgress = jobProgress { jobId = "cache"; fraction = 1f; note = CacheSummary.jobProgressSuffix(cache.bytes, cache.files).removePrefix(" · "); this.planId = plan.planId } })
+                            break
+                        }
                         MeshState.log("✗ port $port unusable on this phone (reserved or busy), trying the next")
                     }
                     LlamaRunner.Start.FAILED -> { report("worker", false, "could not start the RPC worker", plan.planId); return }

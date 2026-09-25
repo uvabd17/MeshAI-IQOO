@@ -50,6 +50,13 @@ data class UiState(
     val profileSent: Boolean = false,
     val workerReady: Boolean = false,
     val osName: String = "",
+    /** RPC tensor cache (`-c`) on this phone right now (T098): what a resumed worker plan will reuse. */
+    val rpcCacheBytes: Long = 0,
+    val rpcCacheFiles: Int = 0,
+    /** Keep-alive card (T098), read by Profiler.keepAlive(); null battery state = could not be read. */
+    val batteryUnrestricted: Boolean? = null,
+    val stayOnWhilePluggedIn: Boolean = false,
+    val screenTimeoutMin: Int = 0,
 )
 
 object MeshState {

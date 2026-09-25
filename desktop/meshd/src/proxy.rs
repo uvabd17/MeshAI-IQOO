@@ -134,6 +134,7 @@ pub async fn v1(State(st): State<Arc<AppState>>, req: Request) -> Response {
                             prompt_tps: usage_prompt_tps,
                             ok: true,
                             streaming: true,
+                            link: String::new(),
                         });
                     } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
                         let d = &v["choices"][0]["delta"];
@@ -190,6 +191,7 @@ pub async fn v1(State(st): State<Arc<AppState>>, req: Request) -> Response {
         prompt_tps,
         ok: status.is_success(),
         streaming: false,
+        link: String::new(),
     });
     (status, out_headers, bytes).into_response()
 }

@@ -4,6 +4,10 @@ use crate::state::{now_ms, AppState, Download};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+/// The reference model every phone benches at join time (control.rs) and the layer config the
+/// Calculate step uses to turn that bench into a bandwidth figure (calc.rs).
+pub const BENCH_MODEL_FILE: &str = "Qwen3-0.6B-Q8_0.gguf";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogEntry {
     pub id: String,

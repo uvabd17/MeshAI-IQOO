@@ -1,5 +1,7 @@
 package ai.meshai.worker.ui
 
+import ai.meshai.worker.core.CacheSummary
+import ai.meshai.worker.core.KeepAliveRows
 import ai.meshai.worker.core.MeshPeer
 import ai.meshai.worker.core.PairingPayload
 import ai.meshai.worker.core.UiState
@@ -141,7 +143,11 @@ private val BW = 3.dp
 /* ================= screen with two tabs ================= */
 
 @Composable
-fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfirmJoin: (PairingPayload) -> Unit, onRejectJoin: () -> Unit, onLeave: () -> Unit, onStop: () -> Unit, onBench: () -> Unit) {
+fun Dashboard(
+    s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfirmJoin: (PairingPayload) -> Unit, onRejectJoin: () -> Unit,
+    onLeave: () -> Unit, onStop: () -> Unit, onBench: () -> Unit,
+    onRequestNoBatteryRestriction: () -> Unit = {}, onOpenAppSettings: () -> Unit = {},
+) {
     val t = LocalNb.current
     var tab by rememberSaveable { mutableStateOf(0) }
     Column(Modifier.fillMaxSize().background(t.paper).statusBarsPadding()) {
@@ -154,6 +160,7 @@ fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfir
                 else {
                     item { StatusHero(s, onStop, onLeave) }
                     if (s.mesh.isNotEmpty()) item { MeshCard(s) } else item { WaitingCard() }
+                    CacheSummary.meshTabLine(s.rpcCacheBytes, s.rpcCacheFiles)?.let { line -> item { CacheCard(line) } }
                 }
                 item { ActionsRow(s, onBench, onScan, onLeave) }
                 item { LogCard(s) }
@@ -161,6 +168,7 @@ fun Dashboard(s: UiState, onScan: () -> Unit, onJoin: (String) -> Unit, onConfir
                 item { Grid2({ SpeedCard(s, onBench) }, { CoresCard(s) }) }
                 item { Grid2({ MemoryCard(s) }, { HeatCard(s) }) }
                 item { Grid2({ BatteryCard(s) }, { ConnectionCard(s) }) }
+                item { KeepAliveCard(s, onRequestNoBatteryRestriction, onOpenAppSettings) }
                 item { AboutCard(s) }
             }
         }
@@ -310,14 +318,34 @@ private fun steps(s: UiState): List<Step> {
     }
 }
 
+/** "Layers cached on this phone: 234 MB (12 files)" — what a resumed worker plan will reuse (T098). */
+@Composable private fun CacheCard(line: String) {
+    val t = LocalNb.current
+    NBox(fill = t.paper2, shadow = 3.dp, pad = 12.dp) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Memory, null, Modifier.size(22.dp), tint = t.ink)
+            Spacer(Modifier.width(10.dp))
+            Column {
+                Text(line, fontWeight = FontWeight.Black, fontSize = 13.sp, color = t.ink)
+                Muted("From an earlier run. Whether a re-run reuses them has not been measured yet.", 11)
+            }
+        }
+    }
+}
+
 @Composable private fun StatusHero(s: UiState, onStop: () -> Unit, onLeave: () -> Unit) {
     val t = LocalNb.current
     val fill = when (s.role) { "host" -> t.host; "worker" -> t.worker; else -> t.paper2 }
     NBox(fill = fill, shadow = 8.dp) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) { Label("This phone is"); Spacer(Modifier.weight(1f)); Sticker(if (s.processRunning) "working" else "idle", fill = if (s.processRunning) t.accent else t.paper) }
-            Text(when (s.role) { "host" -> "THE BRAIN"; "worker" -> "A HELPER"; else -> "READY" }, fontWeight = FontWeight.Black, fontSize = 34.sp, letterSpacing = (-1).sp, color = t.ink, lineHeight = 36.sp)
+            Text(when { !s.connected -> "RECONNECTING"; s.role == "host" -> "THE BRAIN"; s.role == "worker" -> "A HELPER"; else -> "READY" }, fontWeight = FontWeight.Black, fontSize = 34.sp, letterSpacing = (-1).sp, color = t.ink, lineHeight = 36.sp)
             Text(when {
+                // A dropped link during a run (H2/round-4 #3): say what stays, but only claim the cache when
+                // there actually is one (an empty claim would be a lie, T098) — and never claim what a
+                // resumed run does with it, since that has not been measured (D035).
+                !s.connected && s.rpcCacheBytes > 0 -> "Lost the laptop — reconnecting. Your cached layers stay on the phone."
+                !s.connected -> "Lost the laptop — reconnecting."
                 s.downloadPct in 0..99 -> "Getting the model from the laptop · ${s.downloadPct}%"
                 s.role == "host" && s.processRunning -> "This phone runs the whole model and writes the answers. The laptop just passes your questions here."
                 s.role == "worker" && s.processRunning -> "This phone holds ${s.layerEnd - s.layerStart} of the model's ${if (s.nLayer > 0) s.nLayer else "?"} layers and computes them for the laptop."
@@ -562,6 +590,28 @@ private fun NbTokens.paper3() = paper2
                 Box(Modifier.width(6.dp).height(14.dp).background(t.ink, RoundedCornerShape(topEnd = 3.dp, bottomEnd = 3.dp)))
             }
             Muted(if (s.charging) "best for long runs" else "a model drains it faster", 10)
+        }
+    }
+}
+
+/** What stops this phone being killed mid-run (T098): plain rows plus the two toggles we can actually open for the user. */
+@Composable private fun KeepAliveCard(s: UiState, onRequestNoBatteryRestriction: () -> Unit, onOpenAppSettings: () -> Unit) {
+    val t = LocalNb.current
+    val rows = KeepAliveRows.rows(s.batteryUnrestricted, s.stayOnWhilePluggedIn, s.screenTimeoutMin)
+    NBox(shadow = 4.dp, pad = 12.dp) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Head(Icons.Outlined.Bolt, "Keep it running", "what can stop this phone mid-run", small = true)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                rows.forEach { r ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Muted(r.label, 12); Mono(r.value, 12, t.ink)
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                NButton("Request no battery restriction", Modifier.weight(1f), fill = t.accent) { onRequestNoBatteryRestriction() }
+                NButton("Open app settings", Modifier.weight(1f)) { onOpenAppSettings() }
+            }
         }
     }
 }

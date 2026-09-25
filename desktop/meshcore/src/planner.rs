@@ -7,18 +7,32 @@
 //!    hold (greedy, so a tight pool never fails on rounding); the host keeps the non-layer
 //!    tensors (embeddings, output head) plus the first layers.
 //! 3. A device is rejected — with a reason — if it is unsupported (tier gate), its RTT p95 is too
-//!    high, it is too hot, its battery is below the floor, or it brings less memory than one layer.
+//!    high, it is too hot, its battery is below the floor, or it brings less memory than one layer
+//!    plus its compute reserve.
+//! 4. Every device must hold weights + KV + a fixed compute reserve (estimate, D033); the host
+//!    additionally holds the non-layer tensors and, for vision models, the projector
+//!    (`Policy::host_extra_bytes`). The reserves are labelled as estimates wherever they are shown.
 //!
 //! Every placement carries a human-readable reason; the admin panel shows them verbatim.
 
 use crate::gguf::ModelInfo;
 use serde::{Deserialize, Serialize};
 
+/// Compute-graph memory `llama-server` needs beyond weights + KV on the device that hosts it
+/// (the largest graph node, output buffers, etc.) — estimate, not measured (D016 says llama.cpp
+/// compute/RPC buffers are not yet modelled). Demo-safety (D032, §17.3/§17.4): without this, the
+/// planner can over-commit a device's usable memory and the process gets OOM-killed instead of
+/// meshd rejecting the plan up front.
+pub const HOST_COMPUTE_RESERVE_BYTES: u64 = 300_000_000; // 300 MB, estimate (D016)
+/// Same, for a device that only runs `ggml-rpc-server` as a layer-split worker (its compute graph
+/// is smaller: no logits, no sampling). Estimate (D016).
+pub const WORKER_COMPUTE_RESERVE_BYTES: u64 = 150_000_000; // 150 MB, estimate (D016)
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceCap {
     pub device_id: String,
     pub name: String,
-    /// Memory this device may use for weights + KV after OS/runtime headroom.
+    /// Memory this device may use for weights + KV + its compute reserve (D033) after OS/runtime headroom.
     pub usable_bytes: u64,
     /// Measured decode tokens/s on the reference micro-benchmark (0 = unknown).
     pub bench_tps: f32,
@@ -57,6 +71,10 @@ pub struct Placement {
     pub bytes: u64,
     /// Share of the offloaded bytes (informational; llama.cpp args use layer counts, see meshd).
     pub split_weight: f64,
+    /// Compute-buffer estimate budgeted against this device's usable memory (0 for a rejected
+    /// device); see `HOST_COMPUTE_RESERVE_BYTES` / `WORKER_COMPUTE_RESERVE_BYTES`. Separate from
+    /// `bytes` (weights + KV), which is what a live run's process is credited with holding.
+    pub compute_reserve_bytes: u64,
     pub reason: String,
 }
 
@@ -84,6 +102,9 @@ pub struct Policy {
     pub min_thermal_headroom_margin: f32, // reject if headroom > 1 - margin (already throttling)
     pub min_battery_pct: f32,
     pub prefer_host: Option<String>,
+    /// Extra bytes the host process holds beyond the model itself — today the vision projector
+    /// (`--mmproj`, kept in the host process by `--no-mmproj-offload`). 0 for text models.
+    pub host_extra_bytes: u64,
 }
 
 impl Default for Policy {
@@ -93,6 +114,7 @@ impl Default for Policy {
             min_thermal_headroom_margin: 0.05,
             min_battery_pct: 20.0,
             prefer_host: None,
+            host_extra_bytes: 0,
         }
     }
 }
@@ -101,9 +123,9 @@ impl Default for Policy {
 pub enum PlanError {
     #[error("no eligible devices")]
     NoDevices,
-    #[error("model needs {needed} bytes but eligible devices pool only {available} bytes — add a device or use a smaller quant/context")]
+    #[error("model needs {needed} bytes (weights + KV + compute reserves, the reserves are estimates) but eligible devices pool only {available} bytes — add a device, close apps, or use a smaller quant/context")]
     DoesNotFit { needed: u64, available: u64 },
-    #[error("host {host} can hold only {usable} bytes but the embeddings/output tensors alone need {fixed} bytes — pick a host with more free memory")]
+    #[error("host {host} can hold only {usable} bytes but the embeddings/output tensors plus the compute reserve alone need {fixed} bytes — pick a host with more free memory")]
     HostTooSmall {
         host: String,
         usable: u64,
@@ -119,6 +141,11 @@ fn gb(b: u64) -> String {
     format!("{:.1} GB", b as f64 / 1e9)
 }
 
+/// Reserves are shown in MB and labelled as estimates (claims discipline): "300 MB (estimate)".
+fn reserve_label(b: u64) -> String {
+    format!("{} MB compute reserve (estimate)", b / 1_000_000)
+}
+
 fn rejected(d: &DeviceCap, reason: String) -> Placement {
     Placement {
         device_id: d.device_id.clone(),
@@ -128,6 +155,7 @@ fn rejected(d: &DeviceCap, reason: String) -> Placement {
         layer_end: 0,
         bytes: 0,
         split_weight: 0.0,
+        compute_reserve_bytes: 0,
         reason,
     }
 }
@@ -148,6 +176,10 @@ pub fn plan(
         0
     };
     let min_layer = model.layer_bytes.iter().copied().max().unwrap_or(0) + kv_per_layer;
+    // A worker must hold at least one layer *and* its compute reserve (D033).
+    let min_worker = min_layer + WORKER_COMPUTE_RESERVE_BYTES;
+    // Bytes the host process holds beyond the model (vision projector), see Policy::host_extra_bytes.
+    let host_extra = policy.host_extra_bytes;
 
     // 1. Eligibility with reasons.
     let mut rejects: Vec<Placement> = Vec::new();
@@ -173,11 +205,12 @@ pub fn plan(
                 "rejected: battery {:.0}% < {:.0}% floor and not charging",
                 d.battery_pct, policy.min_battery_pct
             ))
-        } else if d.usable_bytes < min_layer {
+        } else if d.usable_bytes < min_worker {
             Some(format!(
-                "rejected: {} usable < one layer ({})",
+                "rejected: {} usable < one layer ({}) + {}",
                 gb(d.usable_bytes),
-                gb(min_layer)
+                gb(min_layer),
+                reserve_label(WORKER_COMPUTE_RESERVE_BYTES)
             ))
         } else {
             None
@@ -221,10 +254,12 @@ pub fn plan(
 
     // 2. Single-device if it fits: preferred host first, then measured speed, then the local
     //    device (a tie at 0 tok/s must not ship the model to a phone because its id sorts first).
+    //    The single device also runs llama-server, so it must clear the host compute reserve.
+    let needed_with_reserve = needed + host_extra + HOST_COMPUTE_RESERVE_BYTES;
     let mut single: Vec<&DeviceCap> = eligible
         .iter()
         .copied()
-        .filter(|d| d.can_host && d.usable_bytes >= needed)
+        .filter(|d| d.can_host && d.usable_bytes >= needed_with_reserve)
         .filter(|d| {
             policy
                 .prefer_host
@@ -250,11 +285,14 @@ pub fn plan(
             role: Role::Host,
             layer_start: 0,
             layer_end: n_layer,
-            bytes: needed,
+            bytes: needed + host_extra,
             split_weight: 1.0,
+            compute_reserve_bytes: HOST_COMPUTE_RESERVE_BYTES,
             reason: format!(
-                "fits on one device: needs {} (weights {} + KV {} @ {} ctx), has {} usable — no network in the path",
-                gb(needed), gb(weights), gb(kv_total), n_ctx, gb(d.usable_bytes)
+                "fits on one device: needs {} (weights {} + KV {} @ {} ctx){} + {} = {}, has {} usable — no network in the path",
+                gb(needed), gb(weights), gb(kv_total), n_ctx,
+                if host_extra > 0 { format!(" + projector {}", gb(host_extra)) } else { String::new() },
+                reserve_label(HOST_COMPUTE_RESERVE_BYTES), gb(needed_with_reserve), gb(d.usable_bytes)
             ),
         }];
         for e in eligible.iter().filter(|e| e.device_id != d.device_id) {
@@ -270,14 +308,15 @@ pub fn plan(
             n_ctx,
             host_id: d.device_id.clone(),
             summary: format!(
-                "{} runs entirely on {} ({} of {} usable)",
+                "{} runs entirely on {} ({} of {} usable, incl. {})",
                 model.name,
                 d.name,
-                gb(needed),
-                gb(d.usable_bytes)
+                gb(needed_with_reserve),
+                gb(d.usable_bytes),
+                reserve_label(HOST_COMPUTE_RESERVE_BYTES)
             ),
             placements,
-            total_needed_bytes: needed,
+            total_needed_bytes: needed_with_reserve,
             total_usable_bytes: d.usable_bytes,
         });
     }
@@ -291,12 +330,14 @@ pub fn plan(
         .find(|d| policy.prefer_host.as_deref() == Some(&d.device_id))
         .or_else(|| hosts.iter().copied().find(|d| d.is_local))
         .unwrap_or(hosts[0]);
-    let host_fixed = model.non_layer_bytes;
-    if host.usable_bytes <= host_fixed {
+    let host_fixed = model.non_layer_bytes + host_extra;
+    // The host must also clear its compute reserve before it can take even the fixed tensors.
+    let host_fixed_with_reserve = host_fixed + HOST_COMPUTE_RESERVE_BYTES;
+    if host.usable_bytes <= host_fixed_with_reserve {
         return Err(PlanError::HostTooSmall {
             host: host.name.clone(),
             usable: host.usable_bytes,
-            fixed: host_fixed,
+            fixed: host_fixed_with_reserve,
         });
     }
     let mut others: Vec<&DeviceCap> = eligible
@@ -316,10 +357,19 @@ pub fn plan(
     let mut i = 0usize;
     let mut d: &DeviceCap = host;
     loop {
-        let cap = if i == 0 {
-            d.usable_bytes.saturating_sub(host_fixed)
+        // The compute reserve comes off the top of what a device can take, alongside the fixed
+        // tensors on the host (D032, §17.4): a device must hold weights + KV + its reserve.
+        let reserve = if i == 0 {
+            HOST_COMPUTE_RESERVE_BYTES
         } else {
+            WORKER_COMPUTE_RESERVE_BYTES
+        };
+        let cap = if i == 0 {
             d.usable_bytes
+                .saturating_sub(host_fixed)
+                .saturating_sub(reserve)
+        } else {
+            d.usable_bytes.saturating_sub(reserve)
         };
         pooled += d.usable_bytes;
         let mut bytes = 0u64;
@@ -342,23 +392,27 @@ pub fn plan(
             layer_end: end,
             bytes: dev_bytes,
             split_weight: dev_bytes as f64,
+            compute_reserve_bytes: reserve,
             reason: if i == 0 {
                 format!(
-                    "host: layers {}–{} ({} layers) + embeddings/output ({}) = {} of {} usable",
+                    "host: layers {}–{} ({} layers) + embeddings/output{} ({}) + {} = {} of {} usable",
                     start,
                     end.saturating_sub(1),
                     end - start,
+                    if host_extra > 0 { "/projector" } else { "" },
                     gb(host_fixed),
-                    gb(dev_bytes),
+                    reserve_label(reserve),
+                    gb(dev_bytes + reserve),
                     gb(d.usable_bytes)
                 )
             } else {
                 format!(
-                    "worker: layers {}–{} ({} layers) = {} of {} usable; RTT p95 {:.0} ms",
+                    "worker: layers {}–{} ({} layers) + {} = {} of {} usable; RTT p95 {:.0} ms",
                     start,
                     end.saturating_sub(1),
                     end - start,
-                    gb(dev_bytes),
+                    reserve_label(reserve),
+                    gb(dev_bytes + reserve),
                     gb(d.usable_bytes),
                     d.rtt_ms_p95
                 )
@@ -373,10 +427,12 @@ pub fn plan(
                 i += 1;
             }
             None => {
+                // Reserves are part of what must fit: host + one per worker used so far (estimates).
+                let reserves = HOST_COMPUTE_RESERVE_BYTES + WORKER_COMPUTE_RESERVE_BYTES * i as u64;
                 return Err(PlanError::DoesNotFit {
-                    needed,
+                    needed: needed + host_extra + reserves,
                     available: pooled,
-                })
+                });
             }
         }
     }
@@ -402,17 +458,21 @@ pub fn plan(
         n_ctx,
         host_id: host.device_id.clone(),
         summary: format!(
-            "{} split across {} devices: needs {} (weights {} + KV {} @ {} ctx), pooled {}",
+            "{} split across {} devices: needs {} (weights {} + KV {} @ {} ctx{}) + compute reserves (estimate), pooled {}",
             model.name,
             n_used,
-            gb(needed),
+            gb(needed + host_extra),
             gb(weights),
             gb(kv_total),
             n_ctx,
+            if host_extra > 0 { format!(" + projector {}", gb(host_extra)) } else { String::new() },
             gb(pooled)
         ),
         placements,
-        total_needed_bytes: needed,
+        total_needed_bytes: needed
+            + host_extra
+            + HOST_COMPUTE_RESERVE_BYTES
+            + WORKER_COMPUTE_RESERVE_BYTES * (n_used.saturating_sub(1)) as u64,
         total_usable_bytes: pooled,
     })
 }
@@ -636,13 +696,16 @@ mod tests {
     fn never_assigns_a_layer_a_device_cannot_hold() {
         // Host holds embeddings + 1 layer; "tiny" holds less than one layer → rejected; "big" (too small
         // for the whole model, so no single-device shortcut) takes the remaining 9 layers.
+        // Capacities include the compute reserve (D032): host needs host_fixed (50 MB) + the host
+        // reserve (300 MB) + 1 layer (≈105 MB) headroom; "big" needs 9 layers (≈945 MB) + the
+        // worker reserve (150 MB) headroom.
         let m = model(10, 100, 50); // 1.05 GB + ~50 MB KV
         let p = plan(
             &m,
             &[
-                dev("local", 0.2, true, 0.0),
+                dev("local", 0.48, true, 0.0),
                 dev("tiny", 0.05, false, 1.0),
-                dev("big", 0.95, false, 1.0),
+                dev("big", 1.1, false, 1.0),
             ],
             512,
             &Policy::default(),
@@ -651,29 +714,136 @@ mod tests {
         contiguous(&p, 10);
         for u in used(&p) {
             let cap: u64 = if u.role == Role::Host {
-                200_000_000
+                480_000_000
             } else {
-                950_000_000
+                1_100_000_000
             };
-            assert!(u.bytes <= cap + 1, "{} over cap", u.name);
+            // Weights + KV *and* the device's compute reserve must fit (D033).
+            assert!(
+                u.bytes + u.compute_reserve_bytes <= cap + 1,
+                "{} over cap incl. reserve",
+                u.name
+            );
         }
         let tiny = p.placements.iter().find(|x| x.device_id == "tiny").unwrap();
         assert_eq!(tiny.role, Role::Rejected);
     }
 
     #[test]
+    fn compute_reserve_costs_a_device_its_last_layer() {
+        // A phone that could hold 5 layers on capacity alone (550 MB / 100 MB = 5.5 → 5) can hold
+        // only 4 once the worker compute reserve (150 MB, D032) is taken off the top: 550 MB -
+        // 150 MB = 400 MB → 4 layers. The remainder (1 layer) must go to a second device instead
+        // of being dropped or over-committing the first.
+        let mut m = model(6, 100, 0); // 100 MB/layer, no fixed tensors, so host_fixed is trivial
+        m.kv_bytes_per_token = 0;
+        let p = plan(
+            &m,
+            &[
+                dev("local", 0.4, true, 0.0), // host_fixed(0) + reserve(300 MB) + 1 layer = 400 MB
+                dev("phoneA", 0.55, false, 1.0), // would hold 5 layers without the reserve
+                dev("phoneB", 0.3, false, 1.0), // picks up the layer the reserve costs phoneA
+            ],
+            1,
+            &Policy::default(),
+        )
+        .unwrap();
+        contiguous(&p, 6);
+        let a = p
+            .placements
+            .iter()
+            .find(|x| x.device_id == "phoneA")
+            .unwrap();
+        assert_eq!(
+            a.layer_end - a.layer_start,
+            4,
+            "550 MB usable minus the 150 MB worker reserve fits only 4 of the 5 layers capacity alone would suggest"
+        );
+        assert_eq!(a.compute_reserve_bytes, WORKER_COMPUTE_RESERVE_BYTES);
+        let b = p
+            .placements
+            .iter()
+            .find(|x| x.device_id == "phoneB")
+            .unwrap();
+        assert_eq!(
+            b.role,
+            Role::Worker,
+            "the layer the reserve displaced must land somewhere, not vanish"
+        );
+        assert_eq!(b.layer_end - b.layer_start, 1);
+    }
+
+    #[test]
+    fn single_device_needs_the_host_reserve_too() {
+        // needed = 6 × 100 MB + 50 MB (KV 0) = 0.65 GB. A lone device with 0.85 GB has the model plus
+        // 200 MB of slack — less than the 300 MB host reserve — so it must NOT be planned as Single
+        // (that is exactly the over-commit an OOM kill comes from, D033).
+        let mut m = model(6, 100, 50);
+        m.kv_bytes_per_token = 0;
+        let r = plan(&m, &[dev("local", 0.85, true, 0.0)], 1, &Policy::default());
+        assert!(
+            !matches!(r, Ok(ref p) if p.mode == Mode::Single),
+            "0.85 GB must not host 0.65 GB + 300 MB reserve as a single device: {r:?}"
+        );
+        // With the reserve covered it is Single again.
+        let p = plan(&m, &[dev("local", 0.96, true, 0.0)], 1, &Policy::default()).unwrap();
+        assert_eq!(p.mode, Mode::Single);
+        assert_eq!(
+            p.total_needed_bytes,
+            650_000_000 + HOST_COMPUTE_RESERVE_BYTES
+        );
+    }
+
+    #[test]
+    fn projector_is_budgeted_on_the_host() {
+        // Same 0.65 GB text model fits a 1.0 GB device alone; with a 0.4 GB vision projector that
+        // stays in the host process (--no-mmproj-offload) it no longer does, and the projector must
+        // also count in the split host's fixed bytes.
+        let mut m = model(6, 100, 50);
+        m.kv_bytes_per_token = 0;
+        let pol = Policy {
+            host_extra_bytes: 400_000_000,
+            ..Policy::default()
+        };
+        let p = plan(&m, &[dev("local", 1.0, true, 0.0)], 1, &Policy::default()).unwrap();
+        assert_eq!(p.mode, Mode::Single);
+        let r = plan(&m, &[dev("local", 1.0, true, 0.0)], 1, &pol);
+        assert!(!matches!(r, Ok(ref p) if p.mode == Mode::Single), "{r:?}");
+        // Add a worker: host holds projector + head + reserve + layers, worker takes the rest.
+        let p = plan(
+            &m,
+            &[dev("local", 1.0, true, 0.0), dev("w", 0.6, false, 1.0)],
+            1,
+            &pol,
+        )
+        .unwrap();
+        assert_eq!(p.mode, Mode::LayerSplit);
+        let host = p.placements.iter().find(|x| x.role == Role::Host).unwrap();
+        assert!(
+            host.bytes >= 450_000_000,
+            "host bytes include the projector: {}",
+            host.bytes
+        );
+        assert!(host.bytes + host.compute_reserve_bytes <= 1_000_000_000);
+        assert!(host.reason.contains("projector"), "{}", host.reason);
+    }
+
+    #[test]
     fn fragmentation_adds_the_next_device_instead_of_failing() {
-        // 12 × 100 MB + 50 MB head, KV 0 → needed 1.25 GB. local 0.39 (3 layers), a/b/c 0.49 (4 each).
-        // Pooled local+a+b = 1.37 GB ≥ needed but only 11 layers fit by whole layers: c must be added.
+        // 12 × 100 MB + 50 MB head, KV 0 → needed 1.25 GB. Capacities include the compute reserve
+        // (D033) *plus 40 MB of whole-layer waste each*: local 0.69 GB (host_fixed 50 MB + host
+        // reserve 300 MB + 3 layers + 40 MB), a/b 0.59 GB (worker reserve 150 MB + 4 layers + 40 MB).
+        // Raw pooled memory (1.87 GB) exceeds needed + reserves (1.85 GB), yet by whole layers
+        // local+a+b hold only 11: c (0.30 GB = worker reserve + 1 layer) must be added for the 12th.
         let mut m = model(12, 100, 50);
         m.kv_bytes_per_token = 0;
         let p = plan(
             &m,
             &[
-                dev("local", 0.39, true, 0.0),
-                dev("a", 0.49, false, 1.0),
-                dev("b", 0.49, false, 1.0),
-                dev("c", 0.49, false, 1.0),
+                dev("local", 0.69, true, 0.0),
+                dev("a", 0.59, false, 1.0),
+                dev("b", 0.59, false, 1.0),
+                dev("c", 0.30, false, 1.0),
             ],
             1,
             &Policy::default(),
@@ -685,15 +855,17 @@ mod tests {
 
     #[test]
     fn tight_pool_still_fits_thanks_to_greedy_fill() {
-        // 12 layers of 100 MB + 50 MB head; caps 0.35 (host: 3 layers after head), 0.45 (4), 0.55 (5) = exactly 12.
+        // 12 layers of 100 MB + 50 MB head. Capacities include the compute reserve (D032): host
+        // 0.65 GB (host_fixed 50 MB + host reserve 300 MB + 3 layers), a 0.55 GB (worker reserve
+        // 150 MB + 4 layers), b 0.65 GB (worker reserve 150 MB + 5 layers) = exactly 12 layers.
         let mut m = model(12, 100, 50);
         m.kv_bytes_per_token = 0;
         let p = plan(
             &m,
             &[
-                dev("local", 0.35, true, 0.0),
-                dev("a", 0.45, false, 1.0),
-                dev("b", 0.55, false, 1.0),
+                dev("local", 0.65, true, 0.0),
+                dev("a", 0.55, false, 1.0),
+                dev("b", 0.65, false, 1.0),
             ],
             1,
             &Policy::default(),

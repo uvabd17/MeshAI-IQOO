@@ -17,6 +17,9 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 
+/** Raw keep-alive readings (T098); Profiler.keepAlive() fills this, KeepAliveRows turns it into words. */
+data class KeepAliveInfo(val batteryUnrestricted: Boolean?, val stayOnWhilePluggedIn: Boolean, val screenTimeoutMin: Int)
+
 /** Reads what the scheduler needs. The phone reports; the coordinator decides. */
 class Profiler(private val ctx: Context) {
     private val am = ctx.getSystemService(ActivityManager::class.java)
@@ -69,6 +72,18 @@ class Profiler(private val ctx: Context) {
 
     /** Threads for llama.cpp: big + mid cores (capacity ≥ 500), at least 2. */
     fun workerThreads(): Int = cores().count { it.second >= 500 }.coerceAtLeast(2)
+
+    /**
+     * Keep-alive card (T098): battery-optimisation exemption, the global "stay on while plugged" toggle
+     * (read-only from here — it is a system setting, not ours to flip) and the screen-off timeout.
+     * Autostart (MIUI/HyperOS) has no public read API; the UI sends the user to Settings instead.
+     */
+    fun keepAlive(): KeepAliveInfo {
+        val batteryUnrestricted = runCatching { pm.isIgnoringBatteryOptimizations(ctx.packageName) }.getOrNull()
+        val stayOn = runCatching { Settings.Global.getInt(ctx.contentResolver, Settings.Global.STAY_ON_WHILE_PLUGGED_IN, 0) }.getOrDefault(0) != 0
+        val timeoutMs = runCatching { Settings.System.getInt(ctx.contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, 0) }.getOrDefault(0)
+        return KeepAliveInfo(batteryUnrestricted, stayOn, timeoutMs / 60_000)
+    }
 
     fun cpusAllowed(): String = runCatching {
         File("/proc/self/status").readLines().firstOrNull { it.startsWith("Cpus_allowed_list") }?.substringAfter(":")?.trim()

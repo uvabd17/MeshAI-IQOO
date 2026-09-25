@@ -4,6 +4,39 @@
 
 Branch: `native-mesh-v2` on GitHub (uvabd17/MeshAI-IQOO). Older PDFs/decks are in `docs/archive/` and are superseded by this file.
 
+## 0. Start here — project status on 25 Sep 2026 (evening, paused)
+
+**What MeshAI is today.** A laptop service (`meshd`, Rust) plus an Android app pair a laptop with phones and serve one local OpenAI-compatible endpoint. A model that fits one device runs there; a model that doesn't is cut into whole layers and spread over devices with llama.cpp RPC. The admin panel walks a user through four locked steps: **Devices → Models → Prepare → Use**.
+
+**Works and was run on real hardware**
+- Pairing over USB (one click) or QR; the phone reconnects on its own.
+- Phone as host: Qwen3-0.6B at 28.8 tok/s.
+- Laptop + phone layer split with correct answers: 1.2–1.4 tok/s over the USB-debugging cable, 7.1–8.9 tok/s over home Wi-Fi (6 of 28 layers on the phone, 25 Sep).
+- Laptop alone: Qwen3-8B at 2.9–3.6 tok/s; warm reload 4.6–7.6 s, cold 90 s.
+- Image chat (Qwen2.5-VL-3B): 150 s per screenshot. Speech-to-text (whisper.cpp base.en): 1.5 s for 11 s of audio.
+- Calculate predicts time per request; on the laptop alone it matched measurement within 3 % (a replay calibrated from the same model).
+
+**Built and tested on the laptop, not yet run on a phone** (task T100 closes these)
+- The guided four-step panel, model categories (easy / hard but doable / not possible), advice, readiness checklist, recovery banners, "Start again" after a restart.
+- USB care on pairing (background allowed, doze exemption, stay awake while plugged).
+- Phone app: cached-layer reporting, reuse of a model already on the phone, keep-alive card, single control connection.
+
+**Known open items**
+- **The speed gate (T007)** is not met: we have not yet split a model that fits *neither* device at ≥ 3 tok/s. Needs USB tethering or a hotspot (T004) and a bigger model.
+- Two reviewer fixes were in progress when work stopped (25 Sep): (a) new run rows from **simulated** phones are still labelled "cable" — past rows were relabelled by hand, the code fix in `state.rs::current_link_kind` / `calc.rs::link_input` is not done; (b) `POST /api/calculate` does not validate the model name (use it only on a trusted link); (c) USB care writes `stay_on_while_plugged_in 7` then `svc power stayon usb` overwrites it with 2; (d) the phone's `ControlClient.connect()` can still start two connections on a double tap (needs a mutex). All listed with file names in the reviewer audit under §20 and in `state/tasks.json` T097/T098/T100.
+- Image generation (SD 1.5: 18 min per image) and speech out (Qwen3-TTS: 42 s, 8 GB) are too slow here — not demo items. Video: not feasible on this hardware.
+- Universal adapter (speech, images, route table): designed as D034, not built (T081–T091).
+- Windows never run on a Windows machine. Oracle mirror not deployed (needs approval).
+
+**How to pick it up**
+1. `cargo build --manifest-path desktop/Cargo.toml` then `MESHAI_API_TOKEN=secret desktop/target/debug/meshd serve --lan`; open `http://localhost:8080/admin/?token=secret`.
+2. Build the app: `gradle -p android assembleDebug` (on the original dev laptop use the installed Gradle 8.14.3 wrapper distribution); install it; plug the phone in with USB debugging; press *Pair over USB*.
+3. `MESH_TOKEN=secret scripts/demo-check.sh --phone` tells you in one screen whether the laptop and phone are ready.
+4. Next work, in order: T100 (phone verification) → finish the four reviewer fixes above → T004/T007 over USB tethering → T078 split predictions → D034 slices.
+5. On the original dev laptop the root disk filled up; `desktop/target` and `third_party` are symlinks into `/mnt/storage/meshai/build` (both git-ignored).
+
+Where things are: design §10, decisions §11 (D001–D035), every measured number §12, demo runbook §18, universal-adapter design §19, product-flow audit §20, tasks `state/tasks.json`, day-by-day log `state/progress.md`, screenshots `docs/screenshots/`.
+
 ## 1. What MeshAI is
 
 Your laptop and your phone pool their memory over a private link (USB cable, USB tethering or a hotspot) and serve **one local, OpenAI-compatible AI endpoint** — no cloud, no account. A model that fits one device runs there alone ("don't split if it fits"); a model that fits neither is cut into layers and the phone computes its share for the laptop.
@@ -18,12 +51,12 @@ Three pieces: `meshd` (Rust service on the laptop: planner, llama.cpp supervisor
 | Android app | built, 19 JVM tests, lint clean; **executed on the POCO F5** (pair, host mode, helper mode, reconnect, dynamic ports) | logcat + admin screenshots, BENCHMARKS |
 | Admin panel | three pages + top status bar with per-device checklist, download/loading indicators, model cards, chat with image/file attachments | headless-browser runs, screenshots |
 | Phone as host | **works**: 28.8 tok/s on Qwen3-0.6B, model pushed from the laptop in ~130 s | measured |
-| Laptop+phone layer split | **works and is correct**; 1.2–1.4 tok/s over the USB-debugging cable (adb relays every RPC round trip) | measured; gate (≥3 tok/s) needs USB tethering/hotspot, not yet measured |
+| Laptop+phone layer split | **works and is correct**; 1.2–1.4 tok/s over the USB-debugging cable (adb relays every RPC round trip); **7.1–8.9 tok/s over home Wi-Fi on 25 Sep** (RTT p95 4.9 ms that day; 6 of 28 layers on the phone, forced split) | measured; ≥3 tok/s reached over Wi-Fi on a *forced* split of a model that fits the laptop alone — the T007 gate (a model that fits neither device) is still open; link stability (phone went offline on the next run) is the open risk; tethering still unmeasured |
 | Image chat | **works** on the laptop (Qwen2.5-VL-3B + projector described a real screenshot) | measured, 150 s per image on this CPU |
 | Windows | code is cross-platform, scripts written, **not executed on Windows** | `cargo check --target x86_64-pc-windows-gnu` passed before the TLS fix; since `rustls-tls` (ring) it needs `mingw-w64` on the Linux box, which is not installed, so the check is skipped (verify says so) |
 | Oracle mirror | scripts ready, **not deployed** (needs approval) | deploy/oracle |
 
-Tasks: 12 done, 5 active, 6 pending (section 9).
+Tasks: 12 done, 5 active, 15 pending (section 9). **Proposed next step (research + design, not built): section 17 — three model picks, layer rules, a Calculate step that predicts time and compute per request, and a three-step UI.**
 
 ## 3. How to run it
 
@@ -119,6 +152,8 @@ Laptop 20 GB (≈11 GB usable idle, 2 GB headroom); phone 7.4 GB (≈1–2.5 GB 
 ---
 
 ## 10. Design of record (architecture, 23 Sep 2026 audit; sections superseded by later decisions are marked in section 11)
+
+*Note (25 Sep 2026): wherever this section says a device must hold "weights + KV", read "weights + KV + a compute reserve (estimate), plus the projector on the host" — D033.*
 
 **Date:** 23 September 2026 · **Branch:** `native-mesh` · **Supersedes:** Technical Spec v2 / Pitch Deck v3 on architecture only (positioning and claims discipline in v2 still stand).
 
@@ -355,7 +390,7 @@ Android: Kotlin app, `meshcore.so`, embedded RPC worker with explicit `devices[]
 
 ---
 
-## 11. Decisions (D001–D031, newest wins)
+## 11. Decisions (D001–D035, newest wins; D032 and D034 are proposed, D033 and D035 are in force)
 
 Format: **D### — title** · date · context · decision · alternatives rejected · consequences · status.
 
@@ -407,6 +442,8 @@ Format: **D### — title** · date · context · decision · alternatives reject
 #### D016 — Headroom constants until measured
 2026-09-24 · Laptop reserves 2 GB; the phone reports 1.5 GB (`Profiler.HEADROOM`) and the coordinator uses whatever the device reports. Both are guesses to be replaced by the kill-threshold measurement (T006). llama.cpp compute/RPC buffers (~25–30 MiB per device at 2k ctx on the 0.6B) are not yet modelled. Status: provisional.
 
+*Amended by D033 (25 Sep 2026): fixed compute reserves are now budgeted as estimates until the load-log measurement replaces them.*
+
 #### D017 — Thinking off by default for the demo
 2026-09-24 · Qwen3 spends the whole token budget in reasoning unless told otherwise. `llama-server --reasoning off` on every host (laptop and phone). A per-request toggle is a Phase-2 admin control. Status: accepted.
 
@@ -452,6 +489,18 @@ Format: **D### — title** · date · context · decision · alternatives reject
 #### D031 — The phone's RPC port is dynamic: try a spread of ports, report the one that bound, forward the whole set over the cable
 2026-09-24 · Mid-session the POCO F5's kernel added 50048–50061 to `ip_local_reserved_ports`, so the worker's `bind` on 50052 failed ("Failed to create server socket") although it had worked an hour earlier; netcat and the RPC server failed on every port in that range and succeeded on 50062+. **Decision:** the app tries the planned port and then 50062, 50070, 50080, 50100, 50200, 51000, waiting up to 6 s for its own connect probe; it reports `listening:host:port`; meshd adopts the reported port (`Device.rpc_port`) and rebuilds the llama-server arguments *after* the worker-ready wait and before the reachability check; `POST /api/usb/pair` forwards the whole set through adb. Status: accepted; executed (worker came up on 50062, split ready in 20.2 s).
 
+#### D033 — Fixed compute reserves per device and the projector on the host, in force now (amends D016; ahead of D032)
+2026-09-25 · **Context:** the reviewer's audit of the demo-safety change found the planner admitting devices with zero slack: D016 recorded that llama.cpp compute buffers were not modelled, the vision projector (1.34 GB f16) was never budgeted anywhere, and for tied-embedding models the output head landed on the last worker unbudgeted. A demo must never OOM-kill a phone mid-answer. **Decision:** every device must hold weights + KV **plus a fixed compute reserve: 300 MB for the device running llama-server, 150 MB for a worker** — both **estimates** (basis: the 0.6B run held ≈58 MB of non-KV anonymous memory and llama.cpp reported ≈25–30 MiB compute buffers, so these are deliberately generous), shown in MB and labelled "(estimate)" wherever a user sees them, and included in "needs X" totals and in the does-not-fit error. The host additionally budgets the projector file's size when `--mmproj` will be passed (`Policy::host_extra_bytes`). Eligibility requires one layer + the worker reserve. The replacement-plan credit (D024) may cover the placement's bytes plus its reserve, never more than what is really held. `llama-server` gets `--fit off`, `--no-mmproj-offload` and the pin `^(output|output_norm|token_embd)\.(weight|bias)$=CPU` on both the laptop and the phone host path (D018 sync). **Replaced by:** the load-log measurement in T073 (per-device "compute buffer size" lines, ±5 % placement check) once built. **Status:** in force; the arguments must still be executed once on hardware (T079) before this counts as DONE.
+
+#### D032 — PROPOSED: a three-step flow (Devices → Model → Calculate & Run) on a GGUF layer config and a calibrated cost model (would supersede D030's page layout)
+2026-09-24 · **Context:** the product owner asked for an explicit, simpler flow that shows, before running, which device holds which layers, what each stack costs per token, and whether the mesh can run the model at all. Today the panel guesses fit in JavaScript (`file_bytes × 1.15 + 0.2 GB`), the planner has no time model, the single-device choice compares bench tok/s measured on different models, and the "adb RTT" of 2–5 ms is a TCP connect to adbd on the phone's own loopback while the measured adb split spends ≈0.72 s per token on the link. Reading the pinned llama.cpp source showed three placement gaps (projector to RPC device 0 in a split, tied head to the last worker, `--fit` on by default). **Decision (proposed):** (1) meshcore derives a LayerConfig per GGUF (units: token embedding · block i = attention + FFN/experts + its KV · output norm + head · vision encoder + projector; bytes, read bytes and FLOPs per token, KV per token; constraints tagged engine vs policy) served at `GET /api/models/{file}/layers`; (2) `POST /api/calculate` returns the unchanged planner's plan plus a cost model (device ms/token = bytes read ÷ measured bandwidth; prefill = FLOPs ÷ measured compute; link = α + activations ÷ rate, α from a `llama-bench --rpc` probe refined by every split request), verdicts per device and for the mesh, alternatives not chosen, and a provenance tag on every number; (3) `POST /api/run {calc_id}` runs exactly the calculated plan or answers 409; (4) the panel becomes three steps with chat after Run, and phones get a read-only `MeshView` that carries no prompts or answers by schema; (5) `llama-server` gets `--fit off`, `--no-mmproj-offload` and `-ot ^(output|output_norm|token_embd)\.weight$=CPU`, and per-device buffer sizes from the load log are checked against the plan (±5 %). **Rejected:** estimating from datasheets and RTT (the link term is already ≈50× off on adb); loading the plan on every Calculate (minutes per what-if, cannot explain a plan that does not fit); history only (no answer for new combinations); a WebView of the admin API on the phone (needs `--lan` + token on the phone). **Status:** proposed — accept after T071 (α stable within 30 %) and T078 (predicted vs measured within 30 % on the POCO F5). Full design in §17.
+
+#### D034 — PROPOSED: MeshAI becomes a multi-engine adapter through a Bundle Plan (one plan id, several engine processes), compiled-in engine definitions, a unit-based planner and a /v1 route table
+2026-09-25 · **Context:** the product owner wants one local OpenAI-compatible endpoint that also serves speech-to-text, text-to-speech, image generation and embeddings with the same pairing, planner, supervisor, credited caps and three-step UI. Today everything assumes one llama.cpp run: one generation with one host and one local worker; the proxy forwards every `/v1/*` path to one endpoint; the API guard answers 415 to the multipart bodies OpenAI clients send for transcription; the catalog, scan and phone fetch accept only `.gguf`; the phone's ProcessGate owns one child. Upstream (read 25 Sep 2026, not executed): sd.cpp places components per device (`--backend te=…,vae=…,diffusion=…` + `--rpc-servers`, RPC merged Jun 2026) but its RPC server must be built from the llama.cpp commit in its `sync-llama.last` with `GGML_MAX_NAME=160`, so our phone's `ggml-rpc-server` (66fba63) is not an sd.cpp worker; `whisper-server` serves multipart with `--inference-path`, exposes `/load`, uses ggml `.bin` models and documents no health endpoint; `llama-server` has no audio endpoints but accepts `input_audio` (Qwen3-ASR among the listed models); `llama-tts` is CLI-only. Measured: laptop 11–12.3 GB usable, phone 0.6–2.0 GB, reloads 2.0 s (0.6B) to 48.8 s (VL-3B). **Decision (proposed):** (1) meshcore holds a compiled-in `Engine` table (id, pinned commit, tasks, routes, modalities, server/worker binaries per platform, `rpc_abi`, unit kind Layers | Components | Whole, lifecycle Resident | PerRequest, readiness probe, reserves marked estimates, one pure argv function per engine — today's `derive_args` becomes the llama one); catalog entries bind file sets to an engine by id only, never argument templates from disk or the API. (2) Every engine yields a `UnitList` (PinnedToHost / MustStayTogether / MaySplitContiguous / MayMove, tagged engine vs policy); `plan_bundle` finds the smallest device set that holds all units — whole units, then components (exhaustive over ≤4 units), then the unchanged D023 greedy layers; a single chat workload yields exactly today's plan. (3) A session is one Bundle Plan (chat + optional voice in, voice out, draw, embeddings) with one `plan_id` and one generation; all processes start and stop together; any exit ends the run (D025); the D024 credit becomes per device min(Σ placement bytes + reserves, Σ held RSS of the run's children). (4) meshd routes `/v1` by path and `model` (catalog id → file name → OpenAI alias → the unique live workload), answers `/v1/models` itself, returns 404 for unknown paths (whisper's `/load`, sd's native API never reachable); multipart only on the audio routes and only with `Authorization` or `x-mesh-token` present (CSRF defence keeping D021's intent); TTS text goes to engines through a file, never argv. (5) Proto grows additively: `Plan.schema/workloads/assignments`, `LaunchSpec` (allow-listed binary + placeholder argv, no shell), `DeviceProfile.engines/max_procs`; devices without `engines` receive only legacy chat placements. (6) The demo ships laptop-local add-ons only, with no proto or Android change; phones stay at one process until a slot-keyed gate exists. **Rejected:** one engine at a time (every voice turn pays 2–3 model loads; revisit only if a warm 8B reload measures ≤ 2 s); independent concurrent runs (multiplies the D024–D026 state machine and the phone cannot host concurrent processes anyway); linking engines into meshd (compute inside the coordinator, no RSS attribution, no phone reuse); JSON engine manifests from disk/API (command-execution surface under `--lan`); unifying all ggml builds on sd.cpp's pin; placing an add-on on the phone "for speed" (unmeasured; forbidden by "don't split if it fits"). **Consequences:** §19; risks K32–K39; tasks T080–T091; reviewer required for the guard exception, `plan_bundle` and `LaunchSpec`. **Status:** proposed — T080 so far (25 Sep): warm Qwen3-8B reload 4.6–7.6 s (> 2 s ✓, option A rejected); whisper base.en RTF 0.13–0.15 alone (✓ pending the co-residency check with the chat model resident); SD 1.5 measured 1084 s per image (≫ 180 s) → draw is out of the demo; Qwen3-TTS via llama-tts measured 42 s / 8 GB for 5 s of speech → TTS only via a small ONNX voice (Piper/Kokoro) or dropped.
+
+#### D035 — A gated four-step flow (Devices → Models → Prepare → Use), USB care on pairing, link kinds on every run row (supersedes D030's page layout; D032's three steps become four)
+2026-09-25 · **Context:** the product owner wants a flow a first-time user can follow without reading anything, that opens the next step only when the previous one is satisfied, tells them who hosts and who helps, sorts models into easy / hard-but-doable / not possible with the concrete change that would make one possible, prepares (download or reuse, push, readiness) before use, recovers in plain words, and switches on whatever phone controls we can reach over USB. The reviewer also found link costs being derived from history rows whose link kind was unknown. **Decision:** (1) the panel has four steps with lock reasons; Models, Prepare and Use unlock only after a phone is paired online or the user chooses "this laptop only"; Prepare unlocks after a model is chosen; Use when the run is ready; the server remains the gate (`/v1` needs a live run). (2) Device cards carry a role chip (HOST / HELPER / NOT USABLE + reason) and an engine chip; `/api/state.advice` carries per-device advice (plug in, close apps, keep the app in front, cable is slow → tethering). (3) `POST /api/feasibility` classifies every catalog model and on-disk file from the credited capacities alone (easy = one device with the D033 reserve; hard = only split, only at 2k, only after freeing N MB on device X, or only with one more device; impossible = not even pooled at 2k) with off-disk entries explicitly estimated. (4) *Pair over USB* applies phone care over adb (doze whitelist, background allowed, stay awake while plugged in — a persistent global setting, shown to the user) and never touches USB mode (K20); serials must be in `adb devices`; emulators are refused. (5) The last accepted run is persisted (`state/last_run.json`) and offered as "Start again"; recovery banners map engine and link errors to one sentence and one action. (6) Every `RunRow` records its link kind (local / cable / lan / loopback; simulated devices are loopback, never cable) and the cost model derives per-kind link costs only from rows of that kind; historical rows were backfilled from date, device count and speed. (7) The phone's RPC worker keeps its tensor cache under the app's files dir (`LLAMA_CACHE`), reports its size as a separate JobProgress (`job_id = "cache"`, so the `listening:host:port` note stays parseable) and verifies an existing host model by sha256 when the plan carries one, else by size. **Rejected:** gating in the client only (the server already refuses; the client gate is for guidance, not security); applying care silently (it is shown and listed as persistent). **Consequences:** admin four steps; meshd feasibility/advice/care/last_run; Android cache, verification and keep-alive card; tasks T095–T100; §20 audit. **Status:** in force for the laptop side (executed headless + live curl); the phone side is built and unit-tested but **not yet run on a phone** (T100).
+
 ---
 
 ## 12. Benchmarks (every number here was run; conditions included)
@@ -489,10 +538,22 @@ Columns: date · setup · device(s) · model (quant, file GB) · ctx · threads 
 #### Memory kill threshold (T006)
 | date | device (RAM) | model | ctx at last success | MemAvailable before kill | headroom chosen |
 |---|---|---|---|---|---|
+| 2026-09-25 12:44 | llama-server args check (T079/V018): Qwen3-0.6B Q8_0 split, laptop host + local ggml-rpc-server (2 threads), `--fit off`, regex head pin, -ngl 15, ctx 2048 | flags accepted; tied head + output_norm pinned to CPU (log 'buffer type overridden to CPU'); layers 0–13 CPU / 14–27 RPC0; model buffers CPU 380.90 MiB, RPC0 223.25 MiB; KV 112 MiB each; compute buffers CPU 28.01 MiB, RPC0 24.01 MiB | executed once, no chat timing |
+| 2026-09-25 12:49 | **Laptop + POCO F5 split over home Wi-Fi** (phone 192.168.1.4 ↔ laptop 192.168.1.14, RTT p95 4.9 ms today), Qwen3-0.6B Q8_0, ctx 2048, laptop capped to 1.04 GB so the phone takes layers 22–27 (6 of 28), host = laptop, old app build (pre link-fix), scripts/qa/alpha-experiment.sh | ready in 48.9 s; chat 1: **7.09 tok/s**, first word 598 ms, 24 tokens, prompt 30 tokens @ 50.1 tok/s; chat 2: **8.86 tok/s**, first word 293 ms, 31 tokens, prompt @ 37.5 tok/s | first split ≥ 3 tok/s (T007 speed criterion met over Wi-Fi with a forced split; the model itself fits the laptop alone) |
+| 2026-09-25 12:52 | same, phone share 12 layers (laptop capped to 0.89 GB) | **not ready after 240 s**: the phone went offline during bring-up (old app, MIUI, screen state unknown) — run stopped by meshd | link stability, not speed, is the open risk |
+| 2026-09-25 12:59 | **Speech-to-text, whisper.cpp** (commit d09f61a, 24 Sep 2026; host build, AVX2/AVX-512, 4 threads), model ggml-base.en.bin (148 MB), clip samples/jfk.wav (11 s), laptop only, panel engineer's cargo build running concurrently | whisper-bench: load 124 ms, encode 1011 ms; whisper-cli: load 130 ms, encode 1070 ms, decode 11 ms, total **1.70 s for 11 s of audio (RTF 0.15)**, peak RSS 291 MB; whisper-server (`--inference-path /v1/audio/transcriptions`): listening after 245 ms, multipart transcription **1.48 s** (RTF 0.13, same on a second request), RSS 243 MB, response `{"text": …}` (OpenAI shape) | T080(b): base.en is demo-viable on the laptop; readiness = listens almost immediately (model loads in ≈0.13 s from page cache), so a warm-up request before 'ready' is cheap |
+| 2026-09-25 13:09 | **Qwen3-8B Q4_K_M reload ×3 through meshd** (laptop alone, ctx 4096, HDD, page cache cold for the first load; sd.cpp build running niced in the background), one 52-token interview prompt each, 26 tokens out (temperature 0) | load 1 (cold): **90.0 s** ready; load 2: **7.6 s**; load 3: **4.6 s**. Decode 2.93 / 3.23 / 3.62 tok/s; first word 2.60 / 2.39 / 2.56 s; prompt 20–22 tok/s. Same question each time, identical answer | T080(a): a warm reload is 4.6–7.6 s ≫ 2 s, so per-turn engine swapping (D034 option A) is rejected; the bundle plan (C) stands. Cold start needs the D011 warm-up before a demo |
+| 2026-09-25 13:11 | **Co-residency check (inconclusive)**: Qwen3-8B loaded (warm, 4.0 s) while the stable-diffusion.cpp build ran niced in the background; two questions with whisper-server absent, two with it resident and idle (base.en, RSS 187 MB); then one transcription of jfk.wav with the 8B still loaded | decode 2.40 / 2.23 tok/s absent vs 2.20 / 1.64 tok/s resident; transcription 4.53 s (vs 1.48 s alone earlier); MemAvailable 8.6 GB | the concurrent build makes both numbers unreliable (the same 8B decoded at 2.9–3.6 tok/s minutes earlier); repeat on a quiet machine before deciding the D034 co-residency gate |
+| 2026-09-25 13:12 | **Qwen3-ASR-0.6B Q8_0 through llama-server** (66fba63, `--mmproj mmproj-Qwen3-ASR-0.6B-Q8_0.gguf --no-mmproj-offload`, ctx 4096, 4 threads, laptop alone, sd.cpp build running niced), OpenAI chat request with an `input_audio` part (jfk.wav, 11 s) | ready in 15.2 s, RSS 1.50 GB; transcription **11.3 s** (RTF ≈1.0; second request 11.1 s), 172 prompt tokens (audio) + 30 out, text correct with a `language English<asr_text>` prefix; llama.cpp warns 'audio input is in experimental stage' | T080(c): works at our pinned commit; 7× slower and 6× the memory of whisper base.en — the stretch option, not the demo pick |
+| 2026-09-25 13:45 | **Image generation, stable-diffusion.cpp** (b167b94, 25 Sep 2026; host build, 4 threads), SD 1.5 Q8_0 (1.76 GB GGUF), 512×512, 20 steps, seed 42, laptop alone (TTS download running concurrently) | params in RAM 1.68 GB (text encoders 125 MB, diffusion 1.40 GB); sampling **1020.6 s**, wall **1084 s** (18 min); peak RSS **3.41 GB**; a correct 565 KB PNG | T080(e): far above the 180 s gate — draw is NOT a demo item on this laptop; sd-server has `--backend te=…,vae=…,diffusion=…`, `--rpc-servers`, `--split-mode layer|row`, `--params-backend`, `--max-vram` |
+| 2026-09-25 13:45 | **Text-to-speech, llama-tts** (66fba63) with Qwen3-TTS-12Hz-1.7B-Base Q4_K_M + its Q8_0 projector, 18-word sentence, 4 threads, laptop alone | **42.1 s** wall for **5.28 s** of 24 kHz audio (0.32× real time, 6.8–7.4 frames/s), peak RSS **8.06 GB**, 'audio input is in experimental stage' warning | T080(d): not demo-safe (memory and speed); TTS for the demo must come from Piper/Kokoro via sherpa-onnx (not built yet) or be dropped |
+| 2026-09-25 13:0x | **Prediction vs measurement, laptop alone** (T078 data points; calibration = the same model's own earlier run on the same device, i.e. a replay, not an independent forecast) | Qwen3-8B, 52-token prompt / 26 out: predicted 3.59 tok/s, TTFT 2.4 s, total 9.3 s (derived) vs measured 3.62 tok/s, 2.56 s, ≈9.5 s; earlier: predicted 2.97 vs measured 3.05 tok/s | within 3 % on a replay; split predictions and the phone are still untested |
 
 ---
 
 ## 13. Windows
+
+*Open item (25 Sep 2026): `scripts/windows/setup.ps1` pins llama.cpp release b6537; meshd now passes `--fit off`, which that release may not know (the flag exists in the pinned commit 66fba63 used on Linux). Verify or bump the tag before a Windows run.*
 
 `meshd` is one Rust binary (`meshd.exe`) that serves the admin panel, the control plane for
 phones and the OpenAI-compatible `/v1` endpoint. Everything platform-specific goes through
@@ -601,7 +662,7 @@ ready, answering). "Advanced" reveals the raw logs, llama.cpp arguments, downloa
 
 ---
 
-## 15. Risks (K01–K22)
+## 15. Risks (K01–K40)
 
 | ID | Risk | Likelihood | Impact | Signal | Mitigation | Owner task |
 |---|---|---|---|---|---|---|
@@ -627,6 +688,24 @@ ready, answering). "Advanced" reveals the raw logs, llama.cpp arguments, downloa
 | K20 | Switching the phone's USB mode to RNDIS from adb (`svc usb setFunctions rndis`) dropped adb *and* the tether link on the POCO F5 (Android 15); the phone then needs USB debugging re-enabled by hand | High | Med | observed 24 Sep | Turn USB tethering on from the phone's Settings (keeps adb), or use a hotspot; never switch USB functions from adb | T004 |
 | K21 | Shared home Wi-Fi: phone→laptop pings lost 80 % (Wi-Fi power save) and control RTT p95 reached 65.7 ms, so the planner refuses the phone as a worker (policy 60 ms) | High | High | measured | Demo on the laptop hotspot / phone hotspot / USB tethering as the design says (§2); the app's low-latency Wi-Fi lock helps only while joined | T004 |
 | K22 | Android reserves port ranges at runtime (`ip_local_reserved_ports` grew to include 50048–50061 on the POCO F5 during the day) — a fixed worker port stops binding without warning | High | High | measured | D031: dynamic port with fallbacks reported to the laptop; the cable pairing forwards the set | T021 |
+| K23 | Cost-model estimates are wrong: link cost α may vary with layer count or context, phone bandwidth measured on a 0.6B may not carry to 8B-sized blocks, prefill efficiency depends on prompt length | Medium | High | every value shows its source and band; history shown beside the prediction; gates T071/T078; "verify by loading" as fallback |
+| K24 | The adb (USB-debugging) link is too slow: every split over the cable is predicted at ≈1 tok/s | High | High | verdict "slow"; step 1 tells the user to turn on USB tethering from the phone's Settings (never from adb, K20) |
+| K25 | MoE models: blocks are large (≈380–450 MB), so a 2 GB phone holds 4; "read only k/E of the experts per token" is unverified on CPU with mmap; prefill touches all experts; gpt-oss uses sliding-window layers and MXFP4 | Medium | Medium | measure gpt-oss-20b on the laptop alone first; flag as unverified in the UI |
+| K26 | Compute buffers or the tied head over-commit a device (today's planner ignores both) | Medium | High | budget a compute buffer per device; read the real one from the load log; 5 % placement check |
+| K27 | Memory changes between Calculate and Run | Medium | Medium | `calc_id` + 409; never swap silently |
+| K28 | The phone partner view leaks prompts | Low | High | `MeshView` schema has no text fields beyond labels; privacy test; `Plan` stays the only actionable message |
+| K29 | Once RTT is measured with a real echo, the 60 ms policy may reject adb or tethering | Medium | Medium | measure first (T070), then set the policy |
+| K30 | Image generation: no CPU benchmark exists for `stable-diffusion.cpp`; FLUX peak memory is unknown; no component fits the POCO F5 | High | Medium | treat as a research spike: measure SD 1.5 on the laptop before promising anything |
+| K31 | Turning on USB tethering from the phone's Settings may leave adb at "no permissions" on a Linux host (reported for Xiaomi phones; untested here), breaking one-click pairing mid-demo | Medium | Medium | pair first, then switch the link; udev reload + replug; laptop hotspot as the fallback that never touches USB |
+| K32 | sd.cpp RPC ABI mismatch: its worker must be built from sd.cpp's pinned llama.cpp with tensor names of 160 chars; our phone worker (66fba63, 64) would corrupt transfers | High | High | `rpc_abi` matching in the planner; a separate static `libmeshai_rpc_sd.so`; local sd-ABI worker test (T088) |
+| K33 | sd.cpp compute buffers unknown and growing with image size → OOM | High | High | planned size cap; read the load log (T080); refuse requests above the planned size |
+| K34 | Allowing multipart on the audio routes reopens CSRF | Medium | High | require a non-simple header (`Authorization` or `x-mesh-token`) so a browser form fails the CORS preflight; reviewer |
+| K35 | whisper-server readiness unknown → "ready" too early | Medium | Medium | measure in T080; warm-up request before ready |
+| K36 | Per-request TTS pays a model load per call | Medium | Medium | measure in T080; resident server only if too slow |
+| K37 | Toggling an add-on restarts the chat model (bundle = one generation) | Medium | Low | warm reload measured in T080; diff-based restart later (T091) |
+| K38 | Old phone app misreads a multi-placement plan (`firstOrNull` in applyPlan) | Medium | High | legacy gating: devices without `engines` get only their chat placement |
+| K39 | Browser audio is webm/opus, which whisper cannot read | High | Low | JS WAV encoder in the panel; documented formats; 415 otherwise |
+| K40 | Video generation has no CPU timing anywhere; a clip may take hours on this laptop and no component fits the phone | High | Low | never in the demo; one timing spike (T094) before any claim |
 
 ---
 
@@ -672,3 +751,300 @@ ready, answering). "Advanced" reveals the raw logs, llama.cpp arguments, downloa
 **UNKNOWN** Whether a top-app + `connectedDevice` FGS keeps the child out of the "excessive CPU in background" rule for a 10-minute sustained run on the POCO F5 (Android 15) with the screen on and off → **T006** must include this.
 **DECISION** keep A for the hackathon, treat B as the fix if T006 shows kills · **CONFIDENCE** Low until measured
 **CONSEQUENCE** RISKS K13; the dashboard must stay top-app during a plan (already required for cpusets).
+
+#### R005 — Best chat models and the exact llama.cpp RPC placement unit            (2026-09-24)
+**Question.** Which chat GGUFs fit laptop+1 / laptop+2 phones, and what exactly does RPC place where? **Evidence.** `config.json` of eight candidates (Qwen3 8B/14B/30B-A3B, Gemma 3 12B/27B, Llama-3.1-8B, Mistral-Small-3.2-24B, gpt-oss-20b, Phi-4) [source]; llama.cpp `docs/multi-gpu.md` ("each GPU holds a contiguous slice of layers; the KV cache for layer l lives on the device that owns layer l"; `split-mode row` deprecated), `tools/rpc/README.md` (`--tensor-split` follows `--device` order), `src/llama-quant.cpp` (output.weight → Q6_K under Q4_K_M), `ggml-rpc.cpp` (graph-level commands, tensor hash cache), issue #13314 (CPU gets the first layers), discussion #11784 (maintainer: "the default behaviour is to split the model by whole layers, so it doesn't slice the experts"), discussion #9136 (ggerganov: "only the hidden state is transferred after each layer, a few kB"). **Answer.** Placement unit = whole contiguous layer (attention + FFN + all experts + its KV); host prefix first, then one range per RPC device in list order — exactly our measured placement; MoE experts cannot be split across devices; per-token traffic = n_embd × 4 B; output head pinned by our own `-ot`. Model table and picks in §17.2. **Unknowns.** Laptop RAM channel count (Intel spec 58 GB/s vs the ≈14 GB/s effective we back out of 3.05 tok/s); phone i8mm prefill GFLOPS (needs a `llama-bench -p 512 -n 0` run); Gemma 3's exact sliding-window layer pattern; iQOO 15 usable memory. **Sources.** github.com/ggml-org/llama.cpp/blob/master/docs/multi-gpu.md · tools/rpc/README.md · issues/13314 · discussions/11784 · discussions/9136 · huggingface.co model cards for the file sizes.
+
+#### R006 — Cost formulas and prior art (exo, prima.cpp, distributed-llama, cake, Petals)            (2026-09-24)
+**Formulas** (Kipply "Transformer Inference Arithmetic", EleutherAI "Transformer Math 101"): forward FLOPs per token = 2 × active params; batch-1 decode is memory-bound: t = bytes read ÷ bandwidth; prefill is compute-bound: t = 2·P·params ÷ GFLOPS; KV per token per layer = 4 × n_kv_heads × head_dim bytes (f16); link per hop = RTT-dominated at KB payloads. **Prior art.** exo: topology-aware auto-parallel (pipeline + tensor), macOS/Linux only, `/instance/previews` shows memory deltas pre-run but no throughput prediction. prima.cpp: profiles compute/disk/memory, `-lw` manual layer windows, no pre-run display. distributed-llama: tensor-parallel, power-of-two node counts, no Android. **cake** (Rust/Candle): claims iOS/Android/macOS/Linux/Windows, mDNS discovery, VRAM/compute-weighted layer assignment, streams weights from the master — R001's "no direct Android competitor" needs this caveat (unverified on a device). Petals: throughput-weighted block assignment with rebalancing, no Android. **None shows a predicted time per request before running.** **Sources.** kipp.ly/transformer-inference-arithmetic · blog.eleuther.ai/transformer-math · github.com/exo-explore/exo · github.com/OpenCPIL/prima.cpp · github.com/b4rtaz/distributed-llama · github.com/evilsocket/cake · arxiv.org/abs/2312.08361.
+
+#### R007 — Image generation on this hardware            (2026-09-24)
+**Answer.** Only `stable-diffusion.cpp` (ggml, same `ggml-rpc` backend) is viable; its `docs/rpc.md` documents per-component placement ("RPC0 main backend, RPC1/RPC2 text encoders, RPC3 VAE"); the denoiser itself is one placement. Sizes: SD 1.5 q8_0 ≈2.1 GB; SDXL-Turbo Q4_0 ≈5.7 GB with encoders; SD3.5-medium Q4_0 ≈4.1 GB without T5; FLUX.1-schnell Q4_0 DiT 6.77 GB + T5 fp8 4.89 GB (its `flux.md` reports 6.4 GB total for q4_0 — probably peak RSS after freeing the encoder; must be measured). No CPU timing exists in the project's own docs (issue #15 unanswered since 2023). Android: official NDK recipe (API 28+, CPU + OpenCL `SD_OPENCL`), and the `rmatif/Local-Diffusion` app proves arm64 builds run (OpenCL limited to Adreno 7xx). **Sources.** github.com/leejet/stable-diffusion.cpp (docs/rpc.md, docs/flux.md, docs/build.md, docs/quantization_and_gguf.md) · huggingface.co/city96/FLUX.1-schnell-gguf · huggingface.co/calcuis/sd3.5-medium-gguf · github.com/rmatif/Local-Diffusion.
+
+#### R008 — Document and image understanding via llama.cpp mtmd            (2026-09-24)
+**Answer.** Qwen2.5-VL-3B (1.93 + 1.34 GB, 36 layers, DocVQA 93.9 / OCRBench 797, image tokens = H×W/784 — reproduces our measured 2,154-token prompt), Granite-Docling-258M (0.13 + 0.18 GB, document→markdown, open looping bug #16678), MiniCPM-V-4.5 (5.03 + ≈1.1 GB, DocVQA 94.7 / OCRBench 89.0, version-pin bug on some builds). Qwen3-VL has an open mtmd accuracy bug (#29251, active 21 Sep 2026). The projector is offloaded to the first GPU-type device by default (`--no-mmproj-offload` to keep it on CPU); `--mmproj-device` exists but RPC targets are unverified. No PDF path in mtmd: extract text when a text layer exists, otherwise rasterise pages. **Sources.** github.com/ggml-org/llama.cpp/blob/master/docs/multimodal.md · tools/server/README.md · issues/29251 · issues/16678 · arxiv.org/pdf/2502.13923 (Qwen2.5-VL report) · huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF · huggingface.co/ggml-org/granite-docling-258M-GGUF · huggingface.co/openbmb/MiniCPM-V-4_5-gguf.
+
+#### R009 — Demo link: USB tethering vs hotspot on HyperOS/Ubuntu            (2026-09-25)
+**Answer.** USB tethering remains the best default (wired, no Wi-Fi power save or contention, charges the phone) but no RTT/throughput number exists for this pair yet (T004). New Linux-specific risk: enabling tethering from Settings can leave `adb devices` at "no permissions" on Linux hosts (Arch forum, Xiaomi device), distinct from K20; fix is udev reload + replug, or pair before switching. Android randomises hotspot gateway addresses since ~9–11: read `ip route`, do not assume 192.168.43.1. HyperOS keep-alive: Autostart, battery "No restrictions", lock in Recents, longest screen timeout; all reset by reboots/updates. Possible Android-15 carrier entitlement check can make the tethering toggle silently fail. Two SEO pages with precise but unsourced RTT numbers were found and excluded. **Sources.** developer.android.com/tools/adb (wireless debugging) · source.android.com/docs/core/data/tethering-data · bbs.archlinux.org/viewtopic.php?id=285500 · dontkillmyapp.com/xiaomi · wiki.gentoo.org/wiki/Android_USB_tethering · github.com/Mygod/VPNHotspot/discussions/537.
+
+#### R010 — Open: a pinned tied head may be a second copy in memory            (2026-09-25)
+Overriding `token_embd.weight` to CPU selects from the CPU buffer list that includes repack buffers (`llama-model-loader.cpp` ~1240); for tied-embedding models the pinned head may therefore be a separate anonymous copy that `non_layer_bytes` counts once. Small for the 0.6B, large for 262k-vocabulary models; also affects the D024 credit. Check in T070 with a verbose load log. Windows tag b6537 vs `--fit`: see §13.
+
+#### R011 — Speech in and out: STT/TTS engines for this hardware            (2026-09-25)
+**Answer.** *STT:* whisper.cpp (ggml, same core as llama.cpp): tiny 75 MB → large-v3-turbo-q5_0 547 MB on disk, 273 MB → 3.9 GB resident; every size fits the laptop alone, so it is never split ("don't split if it fits"); `whisper-cli` has no `--rpc` and the stock `whisper-server` serves `POST /inference` (multipart), **not** `/v1/audio/transcriptions`, so meshd must own that route. No RTF number exists for a Snapdragon 7-series or this i5 (measure with `whisper-bench`). Stretch: audio-input chat models served by `llama-server` through mtmd (Qwen3-ASR 0.6B/1.7B, Ultravox 1B, Qwen2.5-Omni 3B) — the encoder is pinned to the host like a vision projector and the language layers use the existing split; the request shape is `/v1/chat/completions` with an `input_audio` part. llama.cpp's docs mark Qwen2-Audio as poor; avoid. *TTS:* Piper (ONNX, tens of MB per voice, ×4.5–8 real-time on a 2-core ARM cloud CPU in an independent benchmark) is the safe pick; Kokoro-82M (86–326 MB ONNX, ×0.9 real-time on the same weak cores) the better-quality option; llama.cpp's `tools/tts` now documents only Qwen3-TTS (1.04 GB Q4) and Pocket-TTS after a breaking change on 4 Aug 2026 (OuteTTS status unknown) and has no HTTP server; Orpheus needs ≈8 GB; Dia/Zonos/Fish are GPU-only by their own words. Every local `/v1/audio/speech` server found is Python (openedai-speech, speaches, voicebox, Kokoro-FastAPI), so meshd adds the route itself and shells out. On Android, Piper voices run inside sherpa-onnx (AAR/JNI, official arm64 builds); whisper.cpp has an official NDK example. **Recommendation for the demo:** whisper.cpp `base.en` on the laptop behind a meshd-owned `/v1/audio/transcriptions`, Piper on the laptop behind `/v1/audio/speech`; stretch Qwen3-ASR through llama-server. **Sources.** github.com/ggml-org/whisper.cpp (README, models/README.md, examples/server/README.md, examples/cli/README.md, issue #89) · llama.cpp docs/multimodal.md and tools/server/README.md · tools/tts commits (2026-08-04) · huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF · github.com/OHF-Voice/piper1-gpl · huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX · github.com/obole-ia/tts-cpu-benchmark · github.com/k2-fsa/sherpa-onnx.
+
+#### R012 — Universal adapters: how LocalAI, llama-swap, Ollama, koboldcpp and others do it            (2026-09-25)
+**Answer.** None of LocalAI, llama-swap, Ollama, Jan/Cortex, koboldcpp, LM Studio, ramalama or text-generation-webui places one model across two machines; MeshAI's layer split stays the differentiator. Closest cousins: llama-swap (a proxy that spawns/kills one child process per model by a `cmd` string, `ttl` idle unload, `groups` for concurrent/exclusive sets — no memory accounting at all) for the supervisor shape, and LocalAI's gRPC `backend.proto` (LoadModel/Predict/Embedding/Rerank/GenerateImage/AudioTranscription/TTS/…) for the engine abstraction; LocalAI's model YAML vocabulary `known_usecases` (chat, completion, embeddings, rerank, image, transcript, tts, video) is worth copying. koboldcpp proves the combination llama.cpp + sd.cpp + whisper + TTS behind one OpenAI surface is normal (one process, no isolation). llama-server already serves `/v1/embeddings`, `/rerank`, `/v1/responses`, `/v1/messages` and audio/video *input* parts; it has no `/v1/audio/*` or `/v1/images/*`. stable-diffusion.cpp's server serves OpenAI `/v1/images/generations` and `/edits` (b64_json), A1111 `/sdapi/v1/*` and an async `/sdcpp/v1/*` with video; **its ggml-RPC backend support merged 14 Jun 2026 (PR #1629, after PR #1184)** — the borrowed data plane is ggml-wide, not llama.cpp-only. *Correction to §17.2:* the `docs/rpc.md` pointer could not be found; cite the merged PR and re-derive the current flag names (`--rpc`, `--*-backend-device`) from source. Gaps in our own code: `proxy.rs` forwards every `/v1/*` to whatever is ready (breaks with two engines) and records a benchmark row only for chat routes. Android: whisper.cpp and sd.cpp have official NDK CLI builds (child-process friendly, D010); sherpa-onnx is an AAR/JNI library; Piper on Android = sherpa-onnx. D024's credited-caps replacement logic has no prior-art equivalent. **Sources.** github.com/mudler/LocalAI (model-configuration.md, backend.proto, openai-realtime docs) · github.com/mostlygeek/llama-swap (wiki/Configuration) · ollama.readthedocs.io/en/modelfile · github.com/LostRuins/koboldcpp · github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md · raw.githubusercontent.com/leejet/stable-diffusion.cpp/master/examples/server/api.md · github.com/leejet/stable-diffusion.cpp/pull/1184 and /pull/1629 · raw.githubusercontent.com/leejet/stable-diffusion.cpp/master/docs/build.md · github.com/k2-fsa/sherpa-onnx.
+
+#### R013 — Video generation on this hardware            (2026-09-25)
+**Answer.** stable-diffusion.cpp now lists video models (Wan 2.1/2.2, LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3, LingBot) but publishes **no timing at all** (its `performance.md` has none; issue #15 "Benchmark?" is unanswered since 2023). Smallest viable pick: Wan2.1 T2V-1.3B — DiT Q4_K_M 0.98 GB + UMT5-XXL encoder Q4_K_S 3.5 GB + VAE (unquantised, "requires really much VRAM" per its own doc) ≈ 5–6 GB → fits the laptop alone; everything larger (Wan2.2-5B, LTX-2 22B with a Gemma-3-12B encoder, HunyuanVideo with Qwen2.5-VL-7B) exceeds the laptop's budget. The only real timing found is a GPU anecdote (RTX 4060 laptop, ≈400 s per step, hours per clip, possibly misconfigured). CPU-only estimate here: "tens of minutes to several hours" per clip — too wide to promise. No component fits the POCO F5, and moving a VAE off a model that already fits gains nothing. **Verdict:** not a demo item; at most an overnight batch job with Wan2.1 1.3B on the laptop after one timing spike (T094). **Sources.** github.com/leejet/stable-diffusion.cpp (README video section, docs/wan.md, docs/ltx2.md, docs/hunyuan_video.md, docs/performance.md, issues/15) · huggingface.co/samuelchristlie/Wan2.1-T2V-1.3B-GGUF · huggingface.co/city96/umt5-xxl-encoder-gguf · github.com/Wan-Video/Wan2.1/issues/555.
+
+#### R014 — Layer-split state of the art, checked against our pinned llama.cpp (66fba63)            (2026-09-25)
+**Already in our tree (grep of third_party/llama.cpp):** async RPC dispatcher + `send_async` (PR #18626, merged 26 Aug 2026), `RPC_CMD_GRAPH_RECOMPUTE` graph caching, the graph_recompute UAF fix (PR #24292, 16 Sep 2026 — commit date implies included; verify), `--spec-draft-device` (draft model on an RPC device), `--cache-type-k/v`, `--slot-save-path` and `/slots` save/restore, `--fit`, `--split-mode tensor` (flag only: **CUDA-only**, explicitly unsupported on RPC and CPU, PR #19378). Not built upstream: disaggregated prefill/decode (ggerganov's roadmap issue #21266, open); CPU-last device order (#13314, closed stale); small-message coalescing (PR #24122, unmerged draft; its +18 % prompt / +1.4 % decode are self-reported on other hardware). **Confirmed working by a maintainer (issue #23982, 22 Jun 2026):** speculative decoding with the draft model on an RPC device: `llama-server … --rpc <phone> --spec-draft-model <gguf> --spec-draft-device RPC0`. **Prior art:** prima.cpp (piped-ring + Halda scheduler, overlaps disk I/O with compute; Termux only), exo (MLX → Apple only), distributed-llama (tensor-parallel, no Android), cake (Candle; Android claim unverified on any device), EdgeShard (DP partition), TPI-LLM (tensor-parallel with a star all-reduce because link *latency*, not bandwidth, is the bottleneck — matches our RTT-bound finding), PipeLLM (sequence slicing fills pipeline bubbles). None of them ships cross-device speculative decoding; llama.cpp does. **Three cheapest wins:** (1) draft model on the phone (Qwen3-0.6B drafting for Qwen3-8B/14B) over tethering — the phone becomes a speed asset for models that fit the laptop alone; expected 1.5–3× from the general literature, unmeasured for this pair (T092); (2) re-run the existing split benchmark: the async/graph-cache work is already in the binary (T004 covers it); (3) `--cache-type-k q8_0 --cache-type-v q8_0 -fa on` on phone workers halves KV bytes per layer — a memory lever that can turn "needs two phones" into "one phone" (T093). **Rejected:** `--split-mode tensor` (no RPC/CPU support), `-nkvo` on RPC workers (conflicting semantics, untested), DIY prefill/decode via slot save (needs full weights on both devices). **Sources.** github.com/ggml-org/llama.cpp pull/18626 · pull/24292 · pull/24122 · pull/19378 · issues/13314 · issues/13083 · issues/21266 · issues/23982 · docs/speculative.md · arxiv.org/abs/2504.08791 · arxiv.org/abs/2410.00531 · arxiv.org/abs/2405.14371 · arxiv.org/abs/2512.16273 · local grep of third_party/llama.cpp at 66fba63.
+
+#### R015 — Open notes from the 25 Sep reviewer audit            (2026-09-25)
+The phone's RPC tensor cache moved to `<filesDir>/rpc-cache/rpc` (via `LLAMA_CACHE`); the previous default `<filesDir>/.cache/llama.cpp/rpc` may hold orphaned files and there is no size limit or eviction on either — add a cap and a 'clear cache' control (T100 follow-up). meshd fills `Plan.model_sha` only when the scan or a download recorded a hash; otherwise the phone verifies a reused model by size alone. Whether a re-run reuses cached layers (llama.cpp's hash cache across `ggml-rpc-server` restarts) has not been measured.
+
+---
+
+## 17. Next step (proposed): three model picks, layer rules, the Calculate step and a three-step UI
+
+*Requested by the product owner on the evening of 24 Sep 2026. Sources: two research reports (web + upstream source, every link checked 24 Sep 2026) and one design memo that read the pinned llama.cpp tree (commit 66fba63). Status: **PROPOSED** as D032; nothing in this section is built. Tags: **[M]** measured in this repo, **[E]** estimate, **[E←M]** estimate derived from a named measurement, **[S]** read in llama.cpp source but not executed, **[?]** unknown.*
+
+### 17.1 Measured tonight (24 Sep 2026, 21:30–22:30 IST)
+
+| What | Result |
+|---|---|
+| Laptop free memory before | 2.6 GB of 19.5 GB — four idle Gradle/Kotlin build daemons held 10.7 GB. The planner refused every model ("host can hold only 0.7 GB") **[M]** |
+| Laptop free memory after stopping the daemons | 14.0 GB free; planner offers **12.3 GB** usable **[M]** |
+| Phone usable right now | **0.6 GB** = 2.07 GB available − 1.5 GB headroom, with the user's apps open. Battery 32 % **[M]** |
+| Qwen3-8B Q4_K_M, planner dry-run with two simulated 12 GB phones | 36 layers, weights 5.0 GB, embeddings+output 0.9 GB, KV 0.6 GB at 4k → **≈116 MB per block, 4 KB KV per token per layer**; host keeps 0–5 + head, worker 6–35, second phone rejected as not needed **[M]** |
+| Qwen2.5-VL-3B Q4_K_M, same dry-run | 36 layers, weights 1.9 GB, embeddings+output 0.3 GB → ≈45 MB per block, KV 0.2 GB at 4k; `--mmproj` appended **[M]** |
+| Hugging Face CDN from this network | **1.1 MB/s** tonight vs 13 MB/s this afternoon; a 5 GB model would take over an hour **[M]** |
+| Phone mirror | apt `scrcpy` 1.25 cannot drive Android 15 (missing `SurfaceControl.createDisplay`); release 3.3.3 works **[M]** |
+
+### 17.2 The three model picks
+
+**Chat.** Architecture numbers from each model's `config.json` [source]; per-block bytes derived from the published Q4_K_M size and llama.cpp's quant rules (±10–15 %, replace with the real GGUF tensor table once T072 exists) **[E]**.
+
+| Model | File (Q4_K_M) | Layers | Bytes per block (resident) | Read per token (MoE: active experts only) | Fits where (laptop 11–12 GB usable) |
+|---|---|---|---|---|---|
+| Qwen3-8B | 5.03 GB | 36 | ≈116 MB **[M tonight]** | 116 MB | laptop alone — do not split |
+| Qwen3-14B | 9.0 GB | 40 | ≈201 MB | 201 MB | laptop alone, marginal |
+| Gemma 3 12B | 7.3 GB | 48 | ≈139 MB | 139 MB | laptop alone (sliding-window KV, smaller than the naive figure) |
+| Phi-4 14B | 8.9 GB | 40 | ≈207 MB | 207 MB | laptop alone, marginal |
+| **gpt-oss-20b** (MoE 32 experts, 4 active, MXFP4) | 12.1 GB | 24 | ≈451 MB | ≈77 MB | **laptop + 1 phone with ≥2 GB free** — the laptop+1 pick |
+| **Mistral-Small-3.2-24B** | 14.3 GB | 40 | ≈338 MB | 338 MB | **laptop + 2 phones (≈5 GB pooled)** — the laptop+2 pick |
+| Qwen3-30B-A3B (MoE 128 experts, 8 active) | 18.6 GB | 48 | ≈380 MB | ≈35 MB | needs an iQOO-15-class second phone |
+| Gemma 3 27B | 16.5 GB | 62 | ≈252 MB | 252 MB | needs an iQOO-15-class second phone |
+
+Picks: **laptop + 1 phone → gpt-oss-20b** (only fits split, cheap to decode because 4 of 32 experts are read per token), runner-up Qwen3-14B (fits alone, the "why bother splitting" foil), third Phi-4. **Laptop + 2 phones → Mistral-Small-3.2-24B**; Qwen3-30B-A3B and Gemma 3 27B only with the bigger loaner phone. Caveats: MoE blocks are big (380–450 MB), so a 2 GB phone holds only 4 of them; on the POCO F5 tonight (0.6 GB usable) none of these split at all, and with apps closed (~2 GB) it holds ≈13 blocks of an 8B-class model. Artificial Analysis (Sep 2026) ranks the newer Qwen3.5 and Gemma 4 families above all of these; they were outside the asked scope and are not researched.
+
+**Image generation.** Engine: `stable-diffusion.cpp` (same ggml core; ggml-RPC backend support merged 14 Jun 2026 in PR #1629 — per-component placement of text encoders, DiT/UNet and VAE on RPC devices; the earlier `docs/rpc.md` pointer could not be verified, see R012). Split granularity is **per component**, never inside the denoiser: a UNet/DiT that does not fit one device cannot run at all.
+
+| Model | All-in size | Steps | Splittable parts | Note |
+|---|---|---|---|---|
+| SD 1.5 Q8_0 | ≈2.1 GB | 20 | CLIP-L, UNet, VAE | safest; fits the laptop, no reason to split |
+| SDXL-Turbo Q4_0 | ≈5.7 GB | 1–4 | CLIP-L, CLIP-G, UNet, VAE | better quality, still laptop alone |
+| FLUX.1-schnell Q4_0 + T5 fp8 | ≈11–12 GB files (peak RSS **[?]**, `flux.md` says 6.4 GB for the same quant — must be measured) | 4 | text encoders (5.1 GB) / DiT (6.8 GB) / VAE | the only split-worthy one, but the encoder bundle alone is bigger than any phone here |
+
+CPU time per image: **no `sd.cpp` CPU benchmark exists** (its `performance.md` has none); community PyTorch numbers put SD 1.5 at 1–2 min per 512×512 on an i5 → **[E] 30 s–3 min here, unmeasured**. Android arm64 builds exist (official NDK recipe, CPU + OpenCL for Adreno 7xx; Adreno 725 coverage **[?]**). Verdict: a research spike (measure SD 1.5 on the laptop first), not a demo commitment. No component fits the POCO F5's 0.6–2 GB except SD 1.5's CLIP/VAE.
+
+**Image and document understanding** (llama.cpp `mtmd`, `--mmproj`).
+
+| Model | GGUF + projector | LLM layers | Image tokens | DocVQA / OCRBench | Note |
+|---|---|---|---|---|---|
+| **Qwen2.5-VL-3B Q4_K_M** | 1.93 + 1.34 GB | 36 | H×W/784 (1280×1200 → 1,959; matches our measured 2,154-token prompt) | 93.9 / 797 | **already runs here: 150 s per screenshot [M]**; best-verified pick |
+| **Granite-Docling-258M Q4_K_M** | 0.13 + 0.18 GB | small (Idefics3) | tiled | OmniDocBench (document→markdown/HTML), not VQA | tiny enough for the phone; purpose-built for tables/equations/layout; open looping bug llama.cpp #16678 |
+| **MiniCPM-V-4.5 Q4_K_M** | 5.03 + ≈1.1 GB | n/c | n/c | 94.7 / 89.0 | best OCR numbers with a GGUF; must match llama.cpp build to the GGUF's minicpmv version |
+| Qwen3-VL | GGUFs exist | — | — | — | **avoid for now**: open mtmd accuracy bug #29251 (active 21 Sep 2026) |
+| Gemma 3 4B/12B, InternVL3, Pixtral, LFM2-VL | partial data | — | — | ambiguous or missing | fourth candidates once measured; LFM2-VL is absent from llama.cpp's supported-model list |
+
+PDFs: if the PDF has a text layer, extract text (no model needed); otherwise rasterise pages at ~150 DPI and feed them as images. An A4 page at 150 DPI is ≈2,800 image tokens → **[E] ≥150–200 s per page** with Qwen2.5-VL-3B on this CPU, dominated by prefill. The vision encoder and projector always run in the host process by default; `--mmproj-device` exists upstream but its use with an RPC device is unverified. Only the language layers can move to a phone, exactly like a text model.
+
+### 17.3 Layer rules: what can be combined with what
+
+| Unit | GGUF tensors | Rule | Who imposes it |
+|---|---|---|---|
+| `embd` | `token_embd.weight` | pinned to the host | engine: "always keep it on the CPU" (`llama-model.cpp:1535`) **[S]** |
+| `blk.i` | `blk.i.attn_*`, `blk.i.ffn_*` (dense) or router + expert tensors, **plus layer i's KV cache** | must stay together | attention+FFN: MeshAI policy (each extra cut is one more link crossing per token); all experts of a layer: engine (one tensor per projection); KV with its layer: engine default **[S]** |
+| `blk.0 … blk.n-1` | ordered | contiguous ranges, host prefix first, one range per device in `--rpc` order | engine interface (`-ngl` offloads the last N of n_layer+1 entries, `--tensor-split` cuts by cumulative fraction) **[S]**, matches our measured placement CPU 0–3 / RPC0 4–14 / RPC1 15–27 **[M]** |
+| `head` | `output_norm` + `output.weight` (tied models: the `token_embd` duplicate) | pinned to the host | policy: moving it would send n_vocab×4 B ≈ 608 KB of logits per token instead of a 16 KB activation |
+| `vision` | the mmproj file (`v.*`, `mm.*`) | pinned to the host | policy, enforced by `--no-mmproj-offload` |
+
+Hard engine limits: a tensor lives on exactly one device; experts cannot be spread across devices in layer mode (maintainer answer, discussion #11784); `split-mode row` is deprecated; at most 16 RPC servers; traffic between two workers goes through the host (star topology, `ggml-rpc.cpp:752`) **[S]**; changing placement means a full reload. Per-token link traffic is one activation per boundary, n_embd×4 B (8B model: 16 KB); prefill sends P×16 KB per boundary. The measured adb split is therefore RTT/relay-bound, not bandwidth-bound: ≈0.72 s per token on the link **[E←M]** for a 16 KB payload.
+
+**Three placement gaps in today's `llama-server` arguments [S, verify on hardware = T070]:** (1) RPC devices register as GPU-type and the projector is offloaded to the first GPU device by default, so in a split with a vision model the 1.34 GB projector would land on the phone — add `--no-mmproj-offload`; (2) for tied-embedding models (Qwen3-0.6B) `-ot output\.weight=CPU` matches nothing, so the head goes to the last worker unbudgeted — pin `^(output|output_norm|token_embd)\.weight$=CPU`; (3) `--fit` is on by default and may adjust unset arguments — pass `--fit off` so the calculated plan is the plan that runs.
+
+**Split-speed levers found later (R014, 25 Sep 2026):** the async RPC dispatcher and graph cache are already in our pinned llama.cpp; a draft model on the phone (`--spec-draft-device RPC0`) can speed up models that fit the laptop alone (T092); 8-bit KV on phone workers halves their KV memory (T093).
+
+### 17.4 The Calculate step: compute and time per request
+
+Per device d holding units S_d, with A = n_embd×4 B, P prompt tokens, N answer tokens:
+
+```
+memory fit      M_d = Σ weight bytes + n_ctx × Σ KV bytes/token + compute buffer  ≤  usable_d
+decode ms/token t_d = max( bytes read per token / BW_d ,  FLOPs per token / G_d )      (CPU: the first term wins)
+link per worker h_w = α_w + 2·A / β_w                                                   (α = fixed per-token cost, β = bulk rate)
+token time      T   = Σ_d t_d + Σ_w h_w + ~2 ms        →  tok/s = 1000 / T
+prefill         TTFT = Σ_d max( P × FLOPs_d / G_d , ⌈P/512⌉ × weights_d / BW_d ) + Σ_w (⌈P/512⌉·α_w + P·A/β_w)
+answer          total = TTFT + (N−1) × T
+MoE             bytes read per token = dense + experts × k/E  [E]; prefill reads all experts
+vision          TTFT += encoder time (calibrated from the measured 142 s TTFT for 2,154 tokens) + prefill of the image tokens
+```
+
+Inputs and provenance: unit bytes from the GGUF (exact); usable memory from telemetry minus headroom (credited caps, D024) **[M]**; BW_d and G_d from single-device runs (BW = bytes per token × measured tok/s; G = prefill FLOPs ÷ prompt ms) **[E←M]**; α, β per link from a `llama-bench --rpc` probe, refined by an EWMA of the leftover time on every real split request **[E←M]**; compute buffers from the "compute buffer size" lines llama.cpp prints at load (meshd already captures the host log) **[M after first load]**. Every value carries `{v, lo, hi, src: measured|derived|estimate|unknown, from, n}`; an unknown shows no number, only a Measure button. Bands: measured n≥3 ±15 %, derived ±30 %, estimate ±50 %.
+
+Verdicts. Per device: *not capable* (offline, wrong CPU tier, RTT p95 > 60 ms, throttling, battery < 20 % unplugged, cannot hold one block + its KV); *capable* ("holds the whole model" or "holds up to K of N layers"); *capable only with X* (context ≤ 2k, free N MB, use a cable/tethering/hotspot, plug in); *in the plan / not needed*. For the mesh: "can run on {device} alone" · "can run split across N devices — fast ≥10 / OK 3–10 / slow <3 tok/s" · "cannot run: needs X GB, have Y, short Z" with computed fixes (halve context, smaller quant, add a device).
+
+**Worked example — Qwen3-8B Q4_K_M, 4k context, 500-token question, 200-token answer.** Device inputs: laptop 11.0 GB usable, BW 14.3 GB/s and G 122 GFLOP/s **[E←M: 3.05 tok/s and 8.76 tok/s prompt on this model, runs.jsonl]**; phone 2.0 GB usable (apps closed), BW 18.2 GB/s and G 81 GFLOP/s **[E←M: 28.8 / 92 tok/s on Qwen3-0.6B]**; adb link α ≈ 717 ms per token **[E←M: 1.32 tok/s split minus 38 ms of compute]**, USB-tethering α 2–12 ms **[E, unmeasured]**.
+
+| Case | Stacks | Memory | GFLOP per token | ms per token (compute) | Link ms | tok/s | First word (P=500) | 200-token answer |
+|---|---|---|---|---|---|---|---|---|
+| **Recommended: laptop alone** | laptop 0–35 + embd + head | 5.9 of 11.0 GB | 15.5 | 334 | — | **3.0** | ≈58 s | ≈2 min |
+| Why not split, over the adb cable | laptop 0–22 + embd + head · phone 23–35 | 4.5 / 1.9 GB | 10.4 / 5.1 | 226 / 85 | 720 | **≈1.0** | ≈70 s | ≈4.6 min |
+| Same split over USB tethering | same | same | same | 226 / 85 | ≈7 | ≈3.1 | ≈69 s | ≈2.2 min |
+
+Verdicts: laptop capable, host, 36 of 36 layers; POCO F5 capable of up to 13 layers, **not needed**; mesh: *can run on this laptop alone*. Lesson the screen must teach: splitting is for memory, never for speed — even over a fast link the phone's prefill compute is below the laptop's. If the laptop were capped at 4 GB: host keeps 1.16 GB fixed (embd + head + compute buffer) + 21 blocks; the phone would need 15 blocks = 2.14 GB > 2.0 → **cannot run at 4k, short 0.14 GB; capable only with a 2k context** (phone 22–35 = 1.89 GB) → ≈1.0 tok/s over adb or ≈3.2 tok/s over tethering **[E]**. Today's planner ignores compute buffers and would say "fits".
+
+Prior art: exo, prima.cpp, distributed-llama, cake and Petals all partition automatically (memory- or throughput-weighted), and **none shows a predicted time per request before running**; that display is a real differentiator. Correction to R001: `evilsocket/cake` (Rust, Candle) claims Android support with mDNS discovery and compute+memory-weighted layer assignment — unverified on a device, but "no Android competitor" now needs that caveat.
+
+### 17.5 The screens: three steps on the laptop, a view-only mirror on the phone
+
+```
+(1) Devices ── (2) Model ── (3) Calculate & Run                      RIGHT NOW: … [Stop]
+
+STEP 1  DEVICES                     STEP 2  MODEL  (using: laptop + POCO F5, 13.0 GB)
+ [Pair over USB]  [Show QR]          ┌ Qwen3 8B ─────┐ ┌ gpt-oss-20b ──┐ ┌ Qwen2.5-VL 3B ┐
+ ┌ this laptop ──────────┐           │ 5.0 GB · 36 L │ │ 12.1 GB · 24 L│ │ 2.1+1.3 GB    │
+ │ ☑ use · room 11.0 GB  │           │ text · tools  │ │ MoE · tools   │ │ text + images │
+ │ speed 14 GB/s (m)     │           │ ✓ fits laptop │ │ ✓ laptop+phone│ │ ✓ fits laptop │
+ │ ✓ can host, can help  │           └───────────────┘ └───────────────┘ └───────────────┘
+ └───────────────────────┘           memory for the conversation: ○2k ●4k ○8k
+ ┌ POCO F5 ──────────────┐
+ │ ☑ use · room 2.0 GB   │          STEP 3  CALCULATE & RUN   question [500] in, [200] out  [Calculate]
+ │ link USB cable 0.72 s │           ✓ CAN RUN on this laptop alone (5.9 of 11.0 GB)
+ │   per token (m)       │             first word ≈58 s (e) · 3.0 tok/s (m) · answer ≈2 min (e) · last time 3.05 measured
+ │ ✓ can help  ⚠ slow    │           layer 0 ████████████ this laptop 0–35 + in/out ████████████ 35
+ │   link: turn on USB   │           device      layers   memory  GFLOP/tok  ms/tok  verdict
+ │   tethering           │           laptop      0–35+io  5.9 GB  15.5       334 m   capable · host
+ │ [Measure]             │           POCO F5     —        —       —          —       capable (13 layers), not needed
+ └───────────────────────┘           ▸ why not the phone too? laptop 0–22 + phone 23–35 → ≈1.0 tok/s: the cable adds 0.72 s/token
+                                     [Run this plan]   then CHAT (attachments, last answer: measured vs predicted)
+PHONE (view only): steps ✓✓✓ · model · layer bar · "POCO F5 (me): can help 13 layers, not needed" · ≈3.0 tok/s · status. No prompts, no answers.
+```
+
+Keep: the RIGHT NOW bar and checklist, USB one-click pairing and QR, device cards (trimmed), model cards, the stacked layer bar, chat with attachments, Stop. Remove or move: the JavaScript fit guess (`file_bytes × 1.15 + 0.2 GB`) → server verdict; separate Run and Chat pages → step 3; "who runs it" and permission lists → a details drawer; the Advanced toggle → one developer drawer (simulated phones, raw args, host log, analytics, URL download). Partner phones receive a `MeshView` message over the control plane that by schema has no prompt, answer or address fields; `Plan` stays the only message that makes a phone act.
+
+API per step: 1 → `/api/state`, `/api/usb`, `/api/usb/pair`, `/api/pair/offer`, `PUT /api/session {devices}`, `POST /api/devices/{id}/measure` (link probe). 2 → `/api/catalog` (+ server-side fit per model), `/api/models/download`, `PUT /api/session {model, n_ctx}`, `GET /api/models/{file}/layers`. 3 → `POST /api/calculate`, `POST /api/run {calc_id}` (409 if a re-plan would differ), `/api/stop`, `/v1/chat/completions`, `/api/runs`.
+
+### 17.6 Build order (each slice is verified on the POCO F5) and gates
+
+| # | Slice | Task | Verified by |
+|---|---|---|---|
+| S0 | No-code experiment: is the link cost α stable? Qwen3-0.6B, phone 4/14/24 layers × 3 chats, 14 layers at ctx 2k/8k, `adb push` 500 MB for bulk MB/s. Kill criterion: prediction error > 30 % or α drifting > 30 % | T071 (+T070 fact checks) | rows in §12 |
+| S1 | `LayerConfig` from the GGUF tensor table meshcore already parses; `meshd layers`; `GET /api/models/{file}/layers` | T072 | block bytes sum to within 1 % of the three files on disk |
+| S2 | `--fit off`, `--no-mmproj-offload`, tied-head pin; parse per-device buffer sizes from the load log; 5 % placement check | T073 | phone model buffer shrinks by the head size; projector stays on CPU in a split |
+| S3 | Cost model + `/api/calculate` + `/api/session` + `calc_id` | T074 | golden test of the worked example; S0 configurations predicted vs measured |
+| S4 | Calibration store `state/calib.json`, heartbeat echo RTT (today's "adb RTT" is a TCP connect to adbd on the phone's own loopback and never crosses the cable), phone bench report, link probe | T075 | probe α within 30 % of S0 |
+| S5 | Admin three-step flow | T076 | headless QA + screenshot with the phone paired |
+| S6 | Phone partner view (`MeshView`) | T077 | phone screenshot; privacy test |
+| S7 | GATE: prediction accuracy ≤ 30 % on tok/s and first-word time (0.6B split × 3 shares, 8B laptop alone, 8B capped split at 2k) | T078 | rows in §12 |
+| S8 | Measure α over USB tethering or hotspot → settles the ≥3 tok/s gate with the calculator's own numbers | T004/T007 | rows in §12 |
+
+Accept D032 only after S0 (α stable) and S7 (predictions within 30 %). Risks K23–K29 in §15.
+
+---
+
+## 18. Demo runbook (hackathon day)
+
+*Written 25 Sep 2026 from the link research (R009) and the evening's preflight runs. Everything marked [M] was executed here; [E] is expected but unmeasured; [?] must be tested before the day.*
+
+### 18.1 The night before
+1. Charge the phone; free its memory (close apps). The planner needs ≈1.9 GB free on it for a 13-layer share of an 8B model; with apps open it offered 0.6–0.8 GB [M].
+2. Models on the laptop disk: Qwen3-0.6B (phone-host demo), Qwen3-8B (laptop demo), Qwen2.5-VL-3B + projector (image chat). Downloads were 1.1 MB/s on the home network at night [M] — do not plan to download at the venue.
+3. Laptop memory: stop Gradle/Kotlin daemons and the Android emulator; they held 10.7 GB and made the planner refuse every model [M]. `scripts/demo-check.sh` warns about both.
+4. HyperOS keep-alive toggles for the MeshAI app (reset by reboots and OS updates — re-check on the day): Settings → Apps → Manage apps → MeshAI → Autostart **on**; Settings → Battery & performance → Manage apps' battery usage → MeshAI → **No restrictions**; Recents → swipe the MeshAI card down until the padlock shows; Display → screen timeout → longest; keep the phone **unlocked with the app in front** during runs (a lock screen dropped the link once [M]).
+5. Run `MESH_TOKEN=… scripts/demo-check.sh --phone` until it prints READY. It executes a real one-question smoke test (last run: model ready in 10.4 s, answer in 1.3 s [M]).
+
+### 18.2 The link (decides whether the split is watchable)
+| Link | RTT p95 | Split speed | Status |
+|---|---|---|---|
+| USB-debugging cable (adb relay) | 4–13 ms [M] | 0.65–1.4 tok/s [M] — the relay, not the RPC protocol, costs ≈0.7 s per token | works today; too slow for the ≥3 tok/s gate |
+| Shared/venue Wi-Fi | 65–154 ms [M] | refused by the 60 ms policy | never rely on venue Wi-Fi |
+| USB tethering (phone Settings) | [?] expected lowest | [?] | **test first (T004)** |
+| Phone hotspot 5 GHz | [?] | [?] | fallback |
+| Laptop hotspot | [?] | [?] | fallback that never touches the phone's USB mode |
+
+Order of operations, because switching the link can break adb: **pair first, then switch the link.**
+1. Plug in, press *Pair over USB*, tap *Join*. Wait one minute before running anything (the first cable link after pairing was dropped and re-made once, 50 s in [M]; the app fix for this is on disk, not yet verified on the phone).
+2. Phone: Settings → Connection & sharing → USB tethering **on** (older builds: Additional settings → Hotspot & tethering). Never switch it from adb (K20).
+3. Laptop: `adb devices` must still say `device`. If it says `no permissions` (reported by other Xiaomi users on Linux, R009): `sudo udevadm control --reload-rules && sudo udevadm trigger`, replug once; if still broken, keep tethering for data only and use the QR for any re-pairing.
+4. Laptop: `ip addr` shows a new interface (name unknown until tried; historically 192.168.42.x); `ip route` gives the phone's address; `ping` it. The app already tries every laptop address in order (USB tether first), so it moves to the new link by itself.
+5. Run `scripts/demo-check.sh --phone` again: the link line must show the tether address and an RTT under 60 ms.
+6. If tethering fails: laptop hotspot (GNOME Settings → Wi-Fi → Turn on hotspot), phone joins it, same check.
+
+### 18.3 On stage (three tasks, in this order)
+1. **Phone hosts the small model** (Qwen3-0.6B): the laptop pushes the model, the phone answers; 28.8 tok/s measured [M]. Proves the phone runs the engine.
+2. **Laptop alone, Qwen3-8B**: ask it to interview you; 3 tok/s, first word in a few seconds for short prompts [M]. Proves "don't split if it fits".
+3. **Laptop + phone split**: Qwen3-8B with the laptop capped (Devices → details → limit) so the phone must hold 13 layers; over the cable ≈1 tok/s [M], over tethering [?]. Say out loud that splitting is for memory, never for speed. If the link is the cable, keep the answer short (max 40 tokens).
+4. Optional: image chat on the laptop (Qwen2.5-VL-3B, 150 s per screenshot [M]) — start it early or skip if time is short.
+
+### 18.4 If something breaks
+- Stop button in the panel, then `scripts/demo-check.sh`. It names the failing item.
+- Phone shows *offline*: unlock it, bring the app to the front, replug; it reconnects by itself with the stored secret.
+- "host can hold only …": the laptop is out of memory — close apps, or lower the context to 2k.
+- Worker "Failed to create server socket": the phone reserved the port; the app now retries other ports (D031) — press Run again.
+- Stray processes after a crash: `pkill -x llama-server; pkill -x ggml-rpc-server`, and on the phone force-stop the app.
+
+---
+
+## 19. Proposed: the universal adapter (speech in, speech out, images, embeddings) — design summary
+
+*From the design memo of 25 Sep 2026 (D034, proposed) and research R011/R012. Nothing here is built; every upstream fact was read, not executed.*
+
+### 19.1 Engines and where they can run
+
+| Engine | Task | Unit kind | Can use a phone? | Memory (estimates until measured) | Route meshd serves |
+|---|---|---|---|---|---|
+| llama.cpp (today) | chat, vision, audio-input chat, embeddings, rerank | layers (blocks), host-pinned embd/head/projector | yes — the existing split | from the GGUF | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/rerank` |
+| whisper.cpp `whisper-server` | speech → text | whole | later (phone host, one process) | base.en 0.15 GB + 0.2 GB reserve | `/v1/audio/transcriptions`, `/translations` (multipart passthrough via `--inference-path`) |
+| TTS: `llama-tts` (Qwen3-TTS / Pocket-TTS) or sherpa-onnx Kokoro/Piper | text → speech | whole, per request (CLI) | later | 0.1–1 GB | `/v1/audio/speech` (meshd runs the CLI, text via a file, returns WAV) |
+| stable-diffusion.cpp `sd-server` | text → image | components: text encoder(s) MAY MOVE, drawing network MUST STAY TOGETHER, VAE MAY MOVE | yes with a separate sd-ABI worker (K32) | SD 1.5 Q8 ≈2.1 GB + unknown buffers (K33) | `/v1/images/generations` (b64_json forced, n=1, size capped) |
+| Video | text → video | components | no | not a demo item: Wan2.1 1.3B ≈5–6 GB fits the laptop alone but time per clip is unmeasured and could be hours (R013); overnight batch at most | none |
+
+Rules that carry over: "don't split if it fits" applies to a bundle; an add-on moves to a phone only when memory requires it, never for assumed speed. Every reserve is an estimate until a load log replaces it (D033).
+
+### 19.2 The Bundle Plan
+- The user picks a chat model plus add-ons (voice in, voice out, draw, embeddings) in step 2. Calculate places all their units together under one plan id; step 3 shows one row per workload ("voice in: whole model → this laptop · 0.15 GB + 0.2 GB reserve (e)", "draw: reads your prompt → phone | drawing network → laptop | pixels → laptop").
+- One generation, one stop path: all processes of the bundle start and stop together; any process exit ends the run. Credited caps sum per device.
+- Ports on the laptop, loopback only: chat 8081 (unchanged), stt 8082, tts per request, draw 8084, embed 8085; sd-ABI workers on 50352+ with D031 fallbacks.
+- `/v1/models` is answered by meshd; unknown `/v1/*` paths return 404 with the route list.
+
+### 19.3 Phone side (v2 only)
+`LaunchSpec` = allow-listed binary id + argv with placeholders (`{bind}`, `{port}`, `{file:NAME}`), executed without a shell; a slot-keyed ProcessGate; a static `libmeshai_rpc_sd.so` built from sd.cpp's pinned llama.cpp with `GGML_MAX_NAME=160`, 16 KB aligned. Legacy apps (no `engines` in their profile) keep receiving only their chat placement.
+
+### 19.4 Chat controls
+A mic button (browser records, JS encodes 16 kHz mono WAV, posts multipart with the token, transcript lands in the composer for editing), a "speak answers" toggle (posts to `/v1/audio/speech` after the answer, plays the WAV), and `/draw <prompt>` (posts to `/v1/images/generations`, renders inline with its time). Controls appear only when the bundle has that workload.
+
+### 19.5 Order of work (each slice measurable on the laptop; S1–S7 need no phone or proto change)
+
+| # | Task | Slice | Gate |
+|---|---|---|---|
+| S0 | T080 | Laptop measurements, no code: warm reload of Qwen3-8B ×3; decode tok/s with an idle whisper-server resident vs absent; whisper-server base.en on 10 s/30 s WAVs (load, RSS, RTF, readiness); Qwen3-ASR-0.6B through llama-server at 66fba63; `llama-tts` and sherpa-onnx Kokoro one sentence each; `sd-cli` SD 1.5 q8 512² 20 steps (s/image, peak RSS, module names from `sd-server -h`) | decides A vs C, the STT/TTS engines, whether draw is demoable |
+| S1 | T081 | `engine.rs` + catalog v2, behaviour-preserving (llama argv == today's `derive_args`) | 3 supervisor tests + admin QA unchanged |
+| S2 | T082 | `plan_bundle` (whole + layers) | 13 planner tests pass through it; add-on reserved before layers; forced-split add-on refused with a reason; `max_procs` |
+| S3 | T083 | supervisor bundles (list of children, one generation) | V009 orphan test extended; credit sums pids |
+| S4 | T084 | route table, `/v1/models`, multipart guard exception, transcription passthrough, `RunRow.task` | curl multipart WAV → text; 415 without the header; alias `whisper-1`; `/load` → 404; **reviewer** |
+| S5 | T085 | admin: add-on toggles, modality chips, mic (JS WAV), bundle rows | headless QA, 0 console errors |
+| S6 | T086 | TTS engine (from S0) + `/v1/audio/speech` + speaker toggle | WAV plays; text starting with `-` is spoken |
+| S7 | T087 | sd.cpp on the laptop + `/v1/images/generations` + `/draw` | an image and an s/image row in §12 |
+| S8 | T088 | sd component placement against a local sd-ABI rpc-server | `--backend te=RPC0` runs; a name-64 worker is refused |
+| S9 | T089–T091 | proto schema 1 + `LaunchSpec` on the phone; static sd worker; slot-keyed ProcessGate; diff-based restart | legacy-app test; phone screenshot; **reviewer** |
+
+Cheap first win before any of this: llama-server already serves `/v1/embeddings` and `/rerank`; only the benchmark row for non-chat routes is missing (proxy.rs meters chat only).
+
+---
+
+## 20. Product-flow audit (25 Sep 2026) — the guided flow the product owner asked for vs what exists
+
+Target flow: **Devices** (see who is host / helper / engines, pair first, nothing else opens until paired; after pairing show the available compute and advice to keep the helper charged and idle; over USB, switch on the developer controls we can) → **Models** (every model sorted into *easy* / *hard but doable* / *not possible*, with what would make it possible) → **Prepare** (download or reuse what is already there, push to phones, resume after interruptions, a readiness checklist) → **Use** (chat / audio / images) — with mature error handling (stop in the middle, come back, continue) and no dependence on this laptop or this phone.
+
+| Requirement | State | Evidence / gap |
+|---|---|---|
+| Pairing persists; the phone reconnects on its own | **done** | stored device secret, auto-join from the last payload, USB one-click + QR; reconnects seen in every session |
+| Steps locked until paired; only then Models → Prepare → Use open | **built 25 Sep, QA'd headless** | four gated steps with lock reasons and a 'this laptop only' escape hatch (T095); not yet used with the real phone |
+| Who is host, who helps, which engine | **built 25 Sep** | HOST / HELPER / NOT USABLE chips with the reason and an engine chip on every card (T095) |
+| Available compute after pairing | **built 25 Sep** | mesh summary (room, best measured speed, link kind and RTT) on the Devices step (T095) |
+| Advice to keep the helper charging and free | **built 25 Sep** | `advice[]` in `/api/state` (plug in, close apps, keep the app in front, cable is slow → tethering) rendered as a checklist (T096) |
+| Turn on phone developer controls over USB | **built, not run on a phone** | `POST /api/usb/{serial}/care` (doze whitelist, background allowed, stay awake while plugged) is called by *Pair over USB* and reported; verified only against an offline serial so far (T097 → T100) |
+| Model categories easy / hard-but-doable / not possible, with what would make it possible | **built 25 Sep** | `POST /api/feasibility` sorts every catalog model and every file on disk with a `needs` list (context, free memory on which device, one more device, download); the panel shows the three groups (T096) |
+| Prepare step: download or reuse, push, readiness, resume | **partial** | laptop downloads resume (Range + If-Range on `.part`), phone fetches resume (Range, `*/len`), the phone's RPC worker keeps a tensor cache (`-c`) so a re-run does not re-send layers; and since 25 Sep a Prepare step shows on-disk/download with resume, the phone cache note, a readiness checklist, Calculate and Start (T098). Whether a re-run actually reuses cached layers is **not measured** (T100) |
+| Stop in the middle and come back | **partial** | Stop is clean (0 orphans), failure attribution by plan id, dynamic ports; the last accepted run is saved (`state/last_run.json`) and the panel offers 'Start again' after a restart (built 25 Sep); device-side recovery not yet run on the phone (T100) |
+| Recovery messages a novice understands | **built 25 Sep** | recovery banners map meshd's error strings, device-offline events and `last_run` to one sentence and one action (T098) |
+| Universal (any devices, small to large) | **mostly** | the planner takes any number of devices (simulated phones up to 4 tested); feasibility is computed only from device capacities; catalog notes still mention this laptop; no engine other than llama.cpp; Windows never executed (T099) |
+| Layers are the unit; inputs and outputs are all that cross devices | **done** | §17.3 rules, measured placements, per-token activation ≈16 KB |
+
+Measured today for the adapter (§12): SD 1.5 image 18 min, Qwen3-TTS 42 s / 8 GB — neither ships in the demo; whisper base.en 1.5 s per 11 s clip does.
+
+*Reviewer audit of this batch (25 Sep, FAIL → fixes applied the same day): link kinds in the run history were backfilled (cable / lan / loopback) and are now recorded on every row; Calculate and feasibility validate model names and contexts; USB care no longer overwrites the stay-awake setting; the phone's connect path is serialised. Still owed: device verification of the phone half (T100) and the T007 gate model.*

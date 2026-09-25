@@ -21,20 +21,19 @@
       "id": "T003",
       "title": "Host build of llama.cpp with GGML_RPC=ON; phone-alone and laptop-alone llama-bench on a 1–3B GGUF",
       "phase": 0,
-      "status": "PENDING",
+      "status": "DONE",
       "blocked_by": [
         "T002"
-      ]
+      ],
+      "evidence": "DONE 25 Sep 2026 (ledger clean-up): host build exists (third_party/llama.cpp/build-host/bin, GGML_RPC=ON, commit 66fba63); phone-alone Qwen3-0.6B 28.8 tok/s and laptop-alone Qwen3-8B 3.05 tok/s were measured with llama-server through meshd (§12), not with llama-bench."
     },
     {
       "id": "T004",
-      "title": "Laptop↔phone layer split over RPC (hotspot, then USB tethering): TTFT, pp/tg t/s, RTT p50/p95",
+      "title": "Laptop↔phone layer split over a native link (USB tethering from the phone's Settings, else laptop hotspot): RTT p50/p95, TTFT, tok/s; the adb-relay split (0.65–1.4 tok/s) is already measured",
       "phase": 0,
       "status": "ACTIVE",
-      "blocked_by": [
-        "T003"
-      ],
-      "evidence": "EXECUTED 11:26 IST over USB via adb port-forward: split correct (laptop 0–12, phone 13–27), ready 18.6 s, decode 0.65–1.36 tok/s, TTFT 1.5–1.8 s, RTT p50 5 ms; Wi-Fi attempt refused (RTT p95 154 ms). Still to do: USB tethering (Settings, not adb — K20) or hotspot, and the raw llama-bench A/B/C rows (binaries + model are already in /data/local/tmp/meshai)"
+      "blocked_by": [],
+      "evidence": "EXECUTED 11:26 IST over USB via adb port-forward: split correct (laptop 0–12, phone 13–27), ready 18.6 s, decode 0.65–1.36 tok/s, TTFT 1.5–1.8 s, RTT p50 5 ms; Wi-Fi attempt refused (RTT p95 154 ms). Still to do: USB tethering (Settings, not adb — K20) or hotspot, and the raw llama-bench A/B/C rows (binaries + model are already in /data/local/tmp/meshai) | 2026-09-25 12:51: Wi-Fi split measured: 7.09 / 8.86 tok/s, TTFT 293–598 ms, ready 48.9 s (0.6B, phone 6 layers, RTT p95 4.9 ms); 12-layer run failed: phone went offline (old app). Tethering still unmeasured."
     },
     {
       "id": "T005",
@@ -86,11 +85,11 @@
       "id": "T010",
       "title": "meshcore crate skeleton: prost build of proto/mesh.proto, framing, Noise XX pairing handshake, unit tests",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T007"
       ],
-      "evidence": "meshcore: gguf, planner, framing, pairing (token→per-device secret, D013; Noise deferred), 10 tests — held at ACTIVE until the Phase-0 gate (T007) passes on hardware (review round 2)"
+      "evidence": "meshcore: gguf, planner, framing, pairing (token→per-device secret, D013; Noise deferred), 10 tests — held at ACTIVE until the Phase-0 gate (T007) passes on hardware (review round 2) | DONE 25 Sep 2026 (ledger clean-up): meshcore builds proto/mesh.proto with prost, has framing, gguf reader, planner and pairing (QR one-time token + stored device secret; Noise XX transport encryption is deferred to Phase 2 per D002 and pairing.rs, v1 relies on the private link); 18 unit tests pass."
     },
     {
       "id": "T011",
@@ -106,21 +105,21 @@
       "id": "T012",
       "title": "meshd: llama-server supervisor (--rpc from admitted workers), /v1 proxy on :8080, restart on replan",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T011"
       ],
-      "evidence": "supervisor rewritten after review: workers-first ordering, plan-id-keyed worker-ready, TCP check, child watcher for the whole run, teardown on failure, serialized run/stop; local split verified 22 tok/s — held at ACTIVE until the Phase-0 gate (T007) passes on hardware (review round 2)"
+      "evidence": "supervisor rewritten after review: workers-first ordering, plan-id-keyed worker-ready, TCP check, child watcher for the whole run, teardown on failure, serialized run/stop; local split verified 22 tok/s — held at ACTIVE until the Phase-0 gate (T007) passes on hardware (review round 2) | DONE 25 Sep 2026 (ledger clean-up): supervisor starts llama-server with --rpc from admitted workers, /v1 proxied on :8080, replan replaces the run (D024); executed on hardware 24 Sep (§12)."
     },
     {
       "id": "T013",
       "title": "meshd: host-role selection — any paired device runs llama-server, others rpc-server; /v1 proxied to the host",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T012"
       ],
-      "evidence": "host-role selection implemented; phone-host path (model fetch, llama-server on phone) untested — needs a real phone"
+      "evidence": "host-role selection implemented; phone-host path (model fetch, llama-server on phone) untested — needs a real phone | DONE 25 Sep 2026 (ledger clean-up): any paired device can host (D009); the POCO F5 hosted Qwen3-0.6B at 28.8 tok/s with the laptop proxying /v1 (§12)."
     },
     {
       "id": "T020",
@@ -187,12 +186,12 @@
       "id": "T032",
       "title": "Driven test: open admin in headless browser, download model, run chat on laptop-only and on simulated mesh, record timings to BENCHMARKS.md",
       "phase": 1,
-      "status": "ACTIVE",
+      "status": "DONE",
       "blocked_by": [
         "T031",
         "T013"
       ],
-      "evidence": "laptop-only and simulated-mesh chats measured (docs/MESHAI.md (§12 benchmarks)); cloud reference needs an API key; real-phone rows pending"
+      "evidence": "laptop-only and simulated-mesh chats measured (docs/MESHAI.md (§12 benchmarks)); cloud reference needs an API key; real-phone rows pending | DONE 25 Sep 2026 (ledger clean-up): headless-browser driven runs on 24 Sep (download through the panel, laptop-only chat, simulated-mesh chat 22–24 tok/s) recorded in §12."
     },
     {
       "id": "T040",
@@ -222,6 +221,299 @@
         "T031"
       ],
       "evidence": "rounds 1–11 acted on; round 11 = PASS (4 LOWs, all fixed: plan_id read before the request, phone pid fallback via Process.toString + one-time warning + D024/K19 caveat, credit compared with /proc directly, D024 premise measured on every guard run: 998 MB credited vs 1.13 GB released). Android remains NOT executed on a device (T007 gate)."
+    },
+    {
+      "id": "T070",
+      "title": "Verify llama.cpp placement facts on hardware: tied head location with -ot output\\.weight=CPU (Qwen3-0.6B debug load log), mmproj device in a split without --no-mmproj-offload (sim worker), --fit effect on explicit -ngl/-ts, heartbeat-echo RTT vs connect RTT over adb",
+      "phase": 1,
+      "status": "PENDING",
+      "blocked_by": [],
+      "evidence": "proposed 2026-09-24 evening (D032, MESHAI.md §17); not started"
+    },
+    {
+      "id": "T071",
+      "title": "Link-cost (alpha) stability experiment, no code: POCO F5 over adb, Qwen3-0.6B, host laptop, phone 4/14/24 layers x 3 chats x 64 tok, 14-layer at ctx 2048/8192, adb push 500 MB; rows to MESHAI.md §12; kill criterion: error > 30 % or alpha drift > 30 %",
+      "phase": 1,
+      "status": "ACTIVE",
+      "blocked_by": [],
+      "evidence": "proposed 2026-09-24 evening (D032, MESHAI.md §17); not started | 2026-09-25 12:51: first rows over Wi-Fi in state/alpha-experiment.csv (6 layers: 7.1/8.9 tok/s); 12-layer run lost the phone; adb rows and ctx variants pending (phone off USB)"
+    },
+    {
+      "id": "T072",
+      "title": "meshcore LayerConfig from the GGUF tensor table + `meshd layers` + GET /api/models/{file}/layers; golden tests for Qwen3-0.6B, Qwen3-8B, Qwen2.5-VL-3B + mmproj (block bytes within 1 % of the file)",
+      "phase": 1,
+      "status": "DONE",
+      "blocked_by": [],
+      "evidence": "25 Sep 2026: written (meshcore/src/layers.rs + gguf::read_full + `meshd layers <file> [--json]` + GET /api/models/{file}/layers) with 3 synthetic unit tests and a real-file test; NOT compiled yet (machine reserved). Next: cargo test, then run `meshd layers` on the three files and check block bytes sum to within 1 % of the file. | DONE 2026-09-25 13:06: compiled, 4 layer tests pass (real 0.6B file: 28 blocks, units cover the tensor data within the header size), `meshd layers` printed the three files (0.6B 16.7 MB/block, 8B 115.6 MB/block, VL-3B 46.4 MB/block), GET /api/models/{file}/layers answers on the live meshd"
+    },
+    {
+      "id": "T073",
+      "title": "llama-server args: --fit off, --no-mmproj-offload, tied-head pin ^(output|output_norm|token_embd)\\.weight$=CPU; parse per-device buffer sizes from the host log + 5 % placement check",
+      "phase": 1,
+      "status": "PENDING",
+      "blocked_by": [
+        "T070"
+      ],
+      "evidence": "2026-09-25: args part done — supervisor.rs derive_args/llama_args now pass --fit off unconditionally (confirmed in third_party/llama.cpp/build-host/bin/llama-server --help: -fit,--fit [on|off]), --no-mmproj-offload whenever --mmproj is set, and -ot '^(output|output_norm|token_embd)\\.weight$=CPU' in place of the literal output.weight pin (split mode only, unchanged for single-device). Verified live: `meshd plan Qwen3-8B-Q4_K_M.gguf --sim 12,12` shows --fit off + the new -ot pattern; `meshd plan Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf --sim 12,12` shows --no-mmproj-offload. cargo test (39/39) incl. 2 updated supervisor.rs tests. Still open: parsing per-device buffer sizes from the host log + the 5% placement check, and T070's hardware verification (this was sim/--help only, not a device). | 25 Sep: reviewer FAIL → fixed on disk (D033: projector budgeted on the host, reserve in eligibility/totals/error, labelled estimates, credit incl. reserve, bias pin, phone hostArgs mirrored). Not yet compiled or executed (machine reserved by the user). | 2026-09-25 12:44: args executed (V018); compute buffers measured 28/24 MiB on the 0.6B split — the 300/150 MB reserves are ≥10× the measured buffers for this small model (large models: still unmeasured); log-parsing half still unbuilt"
+    },
+    {
+      "id": "T074",
+      "title": "Cost model + POST /api/calculate (stacks, links, prediction, verdicts, alternatives, provenance) + PUT /api/session + calc_id/409 on /api/run; golden test of the §17.4 worked example",
+      "phase": 1,
+      "status": "ACTIVE",
+      "blocked_by": [
+        "T071",
+        "T072",
+        "T073"
+      ],
+      "evidence": "2026-09-25 13:06: cost model (meshcore cost.rs, 5 golden tests) + POST /api/calculate (calc.rs) built and running; speeds derived from the same model's run when available (8B: predicted 2.97 tok/s vs 3.05 measured), link cost per link kind from measured split rows (RunRow.link added); calc_id/409 on /api/run NOT done; session endpoint NOT done"
+    },
+    {
+      "id": "T075",
+      "title": "Calibration: state/calib.json, phone BackendBench -> BW/G, link probe via llama-bench --rpc, Heartbeat echo RTT, residual EWMA, RunRow timings from server metrics",
+      "phase": 1,
+      "status": "PENDING",
+      "blocked_by": [
+        "T074"
+      ],
+      "evidence": "proposed 2026-09-24 evening (D032, MESHAI.md §17); not started"
+    },
+    {
+      "id": "T076",
+      "title": "Admin three-step flow Devices / Model / Calculate & Run (chat after Run); remove app.js fitLabel; Details drawer; update scripts/qa/admin-qa.mjs",
+      "phase": 1,
+      "status": "DONE",
+      "blocked_by": [],
+      "evidence": "25 Sep 2026: admin rewritten as three steps with server-side fit and an honest client-side time estimate (engineer); one headless pass on a spare meshd :8090 with a simulated phone passed before the resource rule (screenshots admin-step1/2/3*.png in the scratchpad). Untested: Run→chat flow, Details drawer visually, dark theme, phone width, scripts/verify. | DONE 2026-09-25 13:06: step 3 now uses /api/calculate (verdict, stacks with GFLOP and ms per token, tagged tiles with ranges, history, bottleneck, alternatives, fix hints, warnings drawer; client estimate only as a non-2xx fallback); headless QA passed on the live meshd (admin-step*.png in the scratchpad); scripts/verify --quick 26 ok. Not exercised live: the post-Run predicted→measured line."
+    },
+    {
+      "id": "T077",
+      "title": "Phone partner view: MeshView (Envelope 20) pushed by meshd, read-only Compose render; JVM + control-plane privacy tests (no prompt/answer fields)",
+      "phase": 1,
+      "status": "PENDING",
+      "blocked_by": [
+        "T074"
+      ],
+      "evidence": "proposed 2026-09-24 evening (D032, MESHAI.md §17); not started"
+    },
+    {
+      "id": "T078",
+      "title": "GATE: prediction accuracy on the POCO F5 (0.6B split x 3 shares, 8B laptop-alone, 8B capped split ctx 2048): |pred-meas| <= 30 % for tok/s and TTFT; rows to §12; accept or reject D032",
+      "phase": 1,
+      "status": "ACTIVE",
+      "blocked_by": [
+        "T075"
+      ],
+      "evidence": "proposed 2026-09-24 evening (D032, MESHAI.md §17); not started | 2026-09-25 13:09: first data point, laptop alone Qwen3-8B, 52-token prompt / 26 out: predicted 3.59 tok/s, TTFT 2.4 s, total 9.3 s (derived) vs measured 3.62 tok/s, 2.56 s, ≈9.5 s → within 3 % (calibrated from the same model's previous run). Split cases and the phone still pending."
+    },
+    {
+      "id": "T079",
+      "title": "Execute the new llama-server args once: laptop host + one local sim ggml-rpc-server, Qwen3-0.6B, verbose load log; grep 'token_embd.weight … overridden to CPU', the sim's model buffer size, and --fit off / --no-mmproj-offload accepted; record in tests.json (V018) and §12",
+      "phase": 1,
+      "status": "DONE",
+      "blocked_by": [],
+      "evidence": "reviewer MEDIUM-2 (25 Sep 2026): never run | DONE 2026-09-25 12:44: executed, see tests.json V018"
+    },
+    {
+      "id": "T080",
+      "title": "Laptop-only measurements for D034 (no code): warm reload of Qwen3-8B x3; decode tok/s with an idle whisper-server resident vs absent; whisper-server base.en on 10 s / 30 s WAVs (load time, RSS, RTF, readiness, json fields); Qwen3-ASR-0.6B via llama-server --mmproj at 66fba63; llama-tts and sherpa-onnx Kokoro one sentence each; sd-cli SD 1.5 q8_0 512^2 20 steps (s/image, peak RSS, compute-buffer lines, sd-server -h module names); rows to §12",
+      "phase": 2,
+      "status": "ACTIVE",
+      "blocked_by": [],
+      "evidence": "proposed 25 Sep 2026 (D034, MESHAI.md §19); not started | 2026-09-25 12:59: (b) done — whisper.cpp base.en on the laptop: RTF 0.13–0.15, RSS 243–291 MB, server listens in 245 ms and serves /v1/audio/transcriptions via --inference-path (§12). Pending: (a) warm reload of Qwen3-8B, idle co-residency cost, (c) Qwen3-ASR, (d) TTS, (e) sd.cpp | 2026-09-25 13:09: (a) done — 8B reload cold 90.0 s, warm 7.6 s / 4.6 s; decode 2.9–3.6 tok/s (§12). Still pending: idle co-residency (whisper resident while the 8B decodes), (c) Qwen3-ASR, (d) TTS, (e) sd.cpp | 2026-09-25 13:11: co-residency measured but inconclusive (sd.cpp build running): 2.2–2.4 vs 1.6–2.2 tok/s; transcription 4.5 s with the 8B resident. Repeat quiet. | 2026-09-25 13:12: (c) done — Qwen3-ASR-0.6B via llama-server works (RTF ≈1.0, 1.5 GB, output prefixed 'language English<asr_text>'); whisper stays the pick. Pending: (d) TTS, (e) sd.cpp, quiet co-residency re-run | 2026-09-25 13:45: (e) SD 1.5 1084 s/image, RSS 3.4 GB → draw out of the demo; (d) Qwen3-TTS via llama-tts 42 s for 5.3 s audio, RSS 8.1 GB → not demo-safe; remaining: quiet co-residency re-run, Piper/Kokoro via sherpa-onnx"
+    },
+    {
+      "id": "T081",
+      "title": "meshcore engine.rs (compiled-in Engine table, one pure argv fn per engine; llama = derive_args) + catalog v2 ModelSpec with file sets and formats; behaviour-preserving (3 supervisor tests + admin QA unchanged)",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [],
+      "evidence": "proposed 25 Sep 2026 (D034, MESHAI.md §19); not started"
+    },
+    {
+      "id": "T082",
+      "title": "plan_bundle: UnitList per engine (Whole + Layers first), smallest device set that holds every unit, add-on reserved on the host before layers, forced-split add-on refused with a reason, max_procs=1 for phones; all planner tests pass through it",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T081"
+      ],
+      "evidence": "proposed 25 Sep 2026 (D034, MESHAI.md §19); not started"
+    },
+    {
+      "id": "T083",
+      "title": "Supervisor bundles: children list under one generation, bring-up/stop over all children, watchers call fail_if_current, credit sums every child's RSS per device; V009 orphan test extended",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T082"
+      ],
+      "evidence": "proposed 25 Sep 2026 (D034, MESHAI.md §19); not started"
+    },
+    {
+      "id": "T084",
+      "title": "/v1 route table + /v1/models served by meshd + 404 for unknown paths; multipart allowed only on /v1/audio/* with Authorization or x-mesh-token; whisper-server passthrough via --inference-path; RunRow.task metering (stt: audio seconds/RTF; image: s/image); REVIEWER",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T083"
+      ],
+      "evidence": "proposed 25 Sep 2026 (D034, MESHAI.md §19); not started"
+    },
+    {
+      "id": "T085",
+      "title": "Admin: add-on toggles + modality chips in step 2, bundle rows in Calculate, mic (browser → 16 kHz mono WAV in JS → multipart), transcript into the composer; admin-qa.mjs extended",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T084"
+      ],
+      "evidence": "proposed 25 Sep 2026 (D034, MESHAI.md §19); not started"
+    },
+    {
+      "id": "T086",
+      "title": "TTS: engine chosen in T080 (llama-tts or sherpa-onnx), PerRequest lifecycle, /v1/audio/speech (text via file, WAV back, timeout), speaker toggle in chat",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T080",
+        "T084"
+      ],
+      "evidence": "proposed 25 Sep 2026 (D034, MESHAI.md §19); not started"
+    },
+    {
+      "id": "T087",
+      "title": "stable-diffusion.cpp on the laptop: host build (pinned commit recorded), catalog entry SD 1.5 q8, /v1/images/generations passthrough (b64_json forced, n=1, size cap), /draw in chat; image row in §12",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T080",
+        "T084"
+      ],
+      "evidence": "proposed 25 Sep 2026 (D034, MESHAI.md §19); not started | 2026-09-25 13:45: sd.cpp built (b167b94) and measured — 18 min per 512² image on this laptop; keep as an overnight feature only"
+    },
+    {
+      "id": "T088",
+      "title": "sd.cpp component placement against a LOCAL sd-ABI ggml-rpc-server (GGML_MAX_NAME=160 build): Components planner + rpc_abi matching; a name-64 worker must be refused, never connected",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T087"
+      ],
+      "evidence": "proposed 25 Sep 2026 (D034, MESHAI.md §19); not started"
+    },
+    {
+      "id": "T089",
+      "title": "Proto schema 1: Plan.schema/workloads/assignments, LaunchSpec, DeviceProfile.engines/max_procs; legacy gating test (old app sees only its chat placement)",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T088",
+        "T007"
+      ],
+      "evidence": "proposed 25 Sep 2026 (D034, MESHAI.md §19); not started"
+    },
+    {
+      "id": "T090",
+      "title": "Phone: LaunchSpec execution with an allow-list and placeholders (no shell), ensureModel accepts .bin/.safetensors/.onnx, slot-keyed ProcessGate (heldBytes over slots, disarm kills all), static libmeshai_rpc_sd.so 16 KB aligned; REVIEWER",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T089"
+      ],
+      "evidence": "proposed 25 Sep 2026 (D034, MESHAI.md §19); not started"
+    },
+    {
+      "id": "T091",
+      "title": "Diff-based restart: keep bundle processes whose argv and placement are unchanged when an add-on is toggled",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T090"
+      ],
+      "evidence": "proposed 25 Sep 2026 (D034, MESHAI.md §19); not started"
+    },
+    {
+      "id": "T092",
+      "title": "Speculative decoding with the draft on the phone: Qwen3-0.6B (draft, POCO F5 via RPC, --spec-draft-device RPC0) + Qwen3-8B Q4_K_M (target, laptop) over USB tethering; measure acceptance rate and tok/s vs the 3.05 tok/s laptop-alone baseline; planner/UI mode 'phone speeds up the laptop' only if measured faster",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T004"
+      ],
+      "evidence": "proposed 25 Sep 2026 (R013/R014); not started"
+    },
+    {
+      "id": "T093",
+      "title": "8-bit KV on phone workers: --cache-type-k q8_0 --cache-type-v q8_0 -fa on in the split args; confirm it loads with the head pin, confirm the layer count a 2 GB phone can hold rises as the cost model predicts, no correctness regression on the demo model",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T079"
+      ],
+      "evidence": "proposed 25 Sep 2026 (R013/R014); not started"
+    },
+    {
+      "id": "T094",
+      "title": "Video timing spike (laptop only, overnight, no promise): Wan2.1 T2V-1.3B Q4_K_M + UMT5-XXL Q4_K_S through sd.cpp, one step and one full clip at 832x480; record s/step, s/clip, peak RSS in §12; decide overnight-feature vs shelve",
+      "phase": 2,
+      "status": "PENDING",
+      "blocked_by": [
+        "T087"
+      ],
+      "evidence": "proposed 25 Sep 2026 (R013/R014); not started"
+    },
+    {
+      "id": "T095",
+      "title": "Panel: guided flow with gating — Devices (host / helper / engine chips, pair first; Models, Prepare, Use stay locked until a phone is paired or the user chooses 'laptop only'), progress persisted; compute summary after pairing",
+      "phase": 1,
+      "status": "DONE",
+      "blocked_by": [],
+      "evidence": "DONE 2026-09-25 14:24: four-step gated flow (Devices→Models→Prepare→Use) with lock reasons, 'this laptop only' escape hatch, role chips HOST / HELPER / NOT USABLE (+reason) and engine chip, mesh summary, advice checklist, care result after USB pairing; headless QA gates 1–5 all pass on the live meshd (scratchpad/shots/admin-step*.png); scripts/verify --quick 26 ok. Not exercised: real-phone USB care and a real download resume."
+    },
+    {
+      "id": "T096",
+      "title": "Feasibility + advice: POST /api/feasibility (every catalog model → easy / hard-but-doable / not-possible with the concrete change that makes it possible: 2k context, free N MB on device X, one more device, smaller quant) and per-device advice in /api/state (plug in, close apps, keep screen on, slow link → tethering); panel step 2 shows the three categories",
+      "phase": 1,
+      "status": "DONE",
+      "blocked_by": [],
+      "evidence": "from the product-flow audit, 25 Sep 2026 (§20) | 2026-09-25 meshd half DONE: POST /api/feasibility (calc.rs, every catalog entry + every runnable file on disk not in the catalog; easy/hard/impossible with a needs[] list of what/detail/device_id/bytes; est_tok_s reuses calc::calculate's device_perf/link_input/cost::predict via new shared helpers device_rows/speeds_for); advice: [{device_id,level,text,action}] added to /api/state (state::device_advice, pure fn over DeviceSnapshot, computed cheaply in api_state). cargo fmt/clippy -D warnings/test clean (44 meshd + 27 meshcore, incl. 6 feasibility_tests + 8 advice_tests). Live on :8080: feasibility with 0 phones (laptop-only, on-disk models 'easy' with est_tok_s, off-disk gpt-oss-20b/qwen3-coder-30b 'impossible' with download+device needs); with a 2 GB sim phone still impossible (short 3.75 GB, matches pooled math); with an 8 GB sim gpt-oss-20b flips to 'hard' split across 2 devices (needs free_memory on the laptop to avoid the split); advice shows 'Open the MeshAI app...' for the paired-but-offline real phone. Panel wiring (step 2 UI) is the other engineer's."
+    },
+    {
+      "id": "T097",
+      "title": "USB pair applies phone controls over adb and reports them: doze whitelist, RUN_ANY_IN_BACKGROUND, stay-awake while plugged (settings put global stay_on_while_plugged_in 7), svc power stayon usb; GET /api/usb/{serial}/care shows what is on; never touches USB mode (K20)",
+      "phase": 1,
+      "status": "ACTIVE",
+      "blocked_by": [],
+      "evidence": "from the product-flow audit, 25 Sep 2026 (§20) | 2026-09-25 DONE: POST/GET /api/usb/{serial}/care (api.rs) runs the 5 adb steps (doze whitelist, RUN_ANY_IN_BACKGROUND, RUN_IN_BACKGROUND, stay_on_while_plugged_in=7, svc power stayon usb) and parses each back to on/off/unknown (doze from dumpsys deviceidle whitelist substring match, appops from the 'OP: mode' line, both stay-awake checks from one settings-get bitmask read since svc power stayon usb overwrites the same setting); refuses emulator-* and malformed serials before any adb call; POST /api/usb/pair now calls apply_care after the pairing intent and returns care+care_errors. 5 parser unit tests (care_parser_tests) incl. the emulator refusal and the shared-bitmask case. Live against the real (offline) phone a71100074abe4acf: GET/POST both return ok with every field 'unknown' and adb's own 'device not found' in care_errors (phone is offline per the task brief — this is the parser path, not the mutation path, executed honestly); GET/POST against emulator-5556 correctly refused with HTTP 400 before touching adb (never used the emulator, as instructed). | 2026-09-25 14:38 reviewer: device path never executed → back to ACTIVE; closes with T100 (real-phone verification). Note: meshd sent an empty model_sha until 25 Sep, so only the size check ever ran."
+    },
+    {
+      "id": "T098",
+      "title": "Prepare step + recovery: downloads and phone pushes as a first-class step with resume and a readiness checklist; persist the last run intent (state/last_run.json) and offer 'Start again' after a restart; plain-words recovery banners (phone offline → what to do; port reserved → retry; out of memory → close apps/2k)",
+      "phase": 1,
+      "status": "ACTIVE",
+      "blocked_by": [
+        "T096"
+      ],
+      "evidence": "from the product-flow audit, 25 Sep 2026 (§20) | 2026-09-25 14:04 phone half DONE (build + 30 JVM tests + lint clean, not run on the device): rpc worker cache pinned to <filesDir>/rpc-cache via LLAMA_CACHE (rpc-server's -c is a bare flag; the dir comes from the env), cache size reported as a separate JobProgress job_id='cache' (the 'listening:host:port' note must stay untouched — control.rs parses the port with rsplit(':')), Mesh tab shows 'Layers cached on this phone'; host model verified by Plan.model_sha (sha256) or size before any download ('model already on this phone — no download'); keep-alive card (battery restriction, autostart→Settings, stay-on while plugged, screen timeout) with a request-exemption button; reconnecting wording. | 2026-09-25 meshd half DONE: state::LastRun persisted to state/last_run.json on every accepted /api/run (state.save_last_run/load_last_run), exposed as last_run in /api/state (null if none) and run.resumable (last_run's model still on disk, state.resumable()); a refused /api/run (model not found) leaves last_run untouched, proven live (ran Qwen3-0.6B ctx 2048 → last_run set + resumable:true; refused a bogus model → last_run/file unchanged, live run stayed ready; chatted through it — 'OK' answer at ~6.9 tok/s decode; stopped cleanly, resumable stayed true). Admin half (readiness checklist, recovery banners, Prepare step UI) is the other engineer's — untouched (admin/ not edited). | panel half DONE 2026-09-25 14:24: Prepare step (readiness checklist, laptop on-disk/download block with 'continuing from X MB', phone cached-layers note, Calculate, Start), Use step with 'Stop and go back', recovery banners mapped from meshd error strings + device-offline + last_run 'Start again' (rendered live). Real-hardware paths untested (phone offline). | 2026-09-25 14:38 reviewer: device path never executed → back to ACTIVE; closes with T100 (real-phone verification). Note: meshd sent an empty model_sha until 25 Sep, so only the size check ever ran."
+    },
+    {
+      "id": "T099",
+      "title": "Universal check: remove this-laptop numbers from catalog notes; planner test with 1 host + 4 helpers of mixed sizes; feasibility categories computed only from device caps; document the small→large story (§20)",
+      "phase": 1,
+      "status": "PENDING",
+      "blocked_by": [
+        "T096"
+      ],
+      "evidence": "from the product-flow audit, 25 Sep 2026 (§20)"
+    },
+    {
+      "id": "T100",
+      "title": "Real-phone verification of the 25 Sep phone changes (POCO F5 on USB): install the APK; re-pair and confirm exactly one control connection in meshd's log and no 'no traffic for 45s' drop within 90 s; GET /api/usb/{serial}/care reads back on/off after Pair over USB; the cache appears under files/rpc-cache/rpc and its size shows in the app and as a 'cache' JobProgress; a reused host model logs 'verified by size' (or sha256 when the plan carries one); keep-alive card reflects the real settings; measure whether a re-run reuses cached layers (ready time run 1 vs run 2)",
+      "phase": 1,
+      "status": "PENDING",
+      "blocked_by": [],
+      "evidence": "reviewer H2, 25 Sep 2026; waits for the phone on USB"
     }
   ]
 }

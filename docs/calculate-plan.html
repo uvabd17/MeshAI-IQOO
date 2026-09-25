@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeshAI Calculate Plan</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+:root{
+  --ink:#0a0a0a; --paper:#fffdf6; --paper-2:#f3f1ea; --paper-3:#e8e5db; --muted:#55555c;
+  --accent:#ffd60a; --host:#b8f0c6; --worker:#cfc3ff; --danger:#ff8a80; --info:#bfe3ff; --pin:#ffe6a3;
+  --shadow:5px 5px 0 var(--ink); --shadow-sm:3px 3px 0 var(--ink); --bw:3px; --r:10px;
+  --font:"Inter","Segoe UI",system-ui,sans-serif; --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --ink:#f5f5f5; --paper:#121214; --paper-2:#1b1b1e; --paper-3:#27272b; --muted:#b5b5bc;
+  --host:#2f7a47; --worker:#5b4bb5; --danger:#b3403a; --info:#2d5f8a; --pin:#7a6320; color-scheme:dark; } }
+:root[data-theme="dark"]{
+  --ink:#f5f5f5; --paper:#121214; --paper-2:#1b1b1e; --paper-3:#27272b; --muted:#b5b5bc;
+  --host:#2f7a47; --worker:#5b4bb5; --danger:#b3403a; --info:#2d5f8a; --pin:#7a6320; color-scheme:dark; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--font);-webkit-font-smoothing:antialiased;
+  background-image:radial-gradient(color-mix(in srgb,var(--ink) 12%,transparent) 1px,transparent 1px);background-size:22px 22px}
+.wrap{max-width:1120px;margin:0 auto;padding-block:28px 60px;padding-inline:20px;display:flex;flex-direction:column;gap:34px}
+h1{font-size:clamp(30px,5vw,46px);font-weight:900;letter-spacing:-.02em;line-height:1.05;margin:0;text-wrap:balance}
+h2{font-size:13px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;margin:0 0 12px}
+h3{font-size:16px;font-weight:900;margin:0 0 6px}
+p{margin:0;max-width:72ch}
+.eyebrow{font-family:var(--mono);font-size:12px;color:var(--muted);font-weight:700;letter-spacing:.04em}
+.card{border:var(--bw) solid var(--ink);border-radius:var(--r);background:var(--paper);box-shadow:var(--shadow);padding:18px}
+.card.flat{box-shadow:var(--shadow-sm)}
+.card.accent{background:var(--accent);color:#0a0a0a}
+.card.host{background:var(--host)} .card.worker{background:var(--worker)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+.grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
+.tile .k{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.tile .v{font-size:30px;font-weight:900;letter-spacing:-.02em;line-height:1.1;margin-top:4px;font-variant-numeric:tabular-nums}
+.tile .s{font-size:13px;color:var(--muted);margin-top:6px}
+.tag{display:inline-block;border:2px solid var(--ink);border-radius:6px;padding:1px 7px;font-family:var(--mono);font-size:11px;font-weight:700;background:var(--paper-2);vertical-align:middle;margin-left:4px}
+.tag.m{background:var(--host)} .tag.e{background:var(--pin)} .tag.s{background:var(--info)} .tag.u{background:var(--danger)}
+.pill{display:inline-block;border:2px solid var(--ink);border-radius:999px;padding:2px 10px;font-weight:900;font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+.pill.ok{background:var(--host)} .pill.no{background:var(--danger)} .pill.warn{background:var(--accent);color:#0a0a0a} .pill.dim{background:var(--paper-3)}
+.tbl{overflow-x:auto;border:var(--bw) solid var(--ink);border-radius:var(--r);background:var(--paper)}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{padding:9px 11px;border-bottom:2px solid var(--ink);text-align:left;vertical-align:top}
+th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;background:var(--paper-2)}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.rec td{background:color-mix(in srgb,var(--host) 45%,var(--paper))}
+.bar{display:flex;height:34px;border:var(--bw) solid var(--ink);border-radius:8px;overflow:hidden;font-family:var(--mono);font-size:11px;font-weight:700}
+.bar>div{display:flex;align-items:center;justify-content:center;border-right:2px solid var(--ink);white-space:nowrap;overflow:hidden;padding:0 4px;color:#0a0a0a}
+.bar>div:last-child{border-right:0}
+.bar .pin{background:var(--pin)} .bar .h{background:var(--host)} .bar .w{background:var(--worker)} .bar .v{background:var(--info)}
+:root[data-theme="dark"] .bar>div, :root[data-theme="dark"] .card.host, :root[data-theme="dark"] .card.worker{color:var(--ink)}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .bar>div, :root:not([data-theme="light"]) .card.host, :root:not([data-theme="light"]) .card.worker{color:var(--ink)} }
+.legend{display:flex;flex-wrap:wrap;gap:10px 18px;font-size:12.5px;margin-top:10px}
+.legend i{display:inline-block;width:14px;height:14px;border:2px solid var(--ink);border-radius:3px;vertical-align:-2px;margin-right:6px}
+pre{margin:0;font-family:var(--mono);font-size:12.5px;line-height:1.55;white-space:pre;overflow-x:auto;background:var(--paper-2);border:var(--bw) solid var(--ink);border-radius:var(--r);padding:14px}
+ul{margin:0;padding-left:20px} li{margin:4px 0}
+.mock{border:var(--bw) solid var(--ink);border-radius:var(--r);background:var(--paper-2);padding:12px;display:flex;flex-direction:column;gap:8px;font-size:12.5px;box-shadow:var(--shadow-sm)}
+.mock .t{font-weight:900;font-size:12px;letter-spacing:.08em;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center}
+.mock .row{display:flex;gap:8px;flex-wrap:wrap}
+.mock .box{border:2px solid var(--ink);border-radius:8px;background:var(--paper);padding:8px 10px;flex:1 1 120px;min-width:0}
+.mock .box.host{background:var(--host)} .mock .box.warn{background:var(--accent);color:#0a0a0a} .mock .box.dim{opacity:.7}
+.mock .btn{border:2px solid var(--ink);border-radius:8px;background:var(--accent);color:#0a0a0a;font-weight:900;padding:6px 12px;display:inline-block;box-shadow:2px 2px 0 var(--ink);font-size:12px}
+.mock .btn.ghost{background:var(--paper)}
+.steps{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-family:var(--mono);font-size:12px;font-weight:700}
+.steps span{border:2px solid var(--ink);border-radius:999px;padding:3px 10px;background:var(--paper)}
+.steps span.on{background:var(--accent);color:#0a0a0a}
+.phone{max-width:300px;border:var(--bw) solid var(--ink);border-radius:22px;padding:14px;background:var(--paper);box-shadow:var(--shadow);font-size:12.5px;display:flex;flex-direction:column;gap:8px}
+.callout{border-left:6px solid var(--accent);padding:10px 14px;background:var(--paper-2);border-radius:0 var(--r) var(--r) 0}
+.small{font-size:12.5px;color:var(--muted)}
+.two{display:grid;grid-template-columns:1.2fr 1fr;gap:18px}
+@media (max-width:760px){.two{grid-template-columns:1fr}}
+a{color:inherit}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">MESHAI · TEAM MAYNARDS · RESEARCH + DESIGN · 24 SEP 2026 · PROPOSED, NOT BUILT</div>
+  <h1 style="margin-top:8px">Which models, which layers go where, and how long one question takes</h1>
+  <p style="margin-top:12px;font-size:16px">Three model picks (chat, image making, reading images and documents), the rules for combining layers across the laptop and the phones, a <b>Calculate</b> step that predicts time and compute per request before anything loads, and a three-step screen that anyone can follow. Source of truth: <span class="tag">docs/MESHAI.md §17</span>. Every number carries a tag: <span class="tag m">m</span> measured here, <span class="tag e">e</span> estimate, <span class="tag s">s</span> read in llama.cpp source, <span class="tag u">?</span> unknown.</p>
+</header>
+
+<section class="card accent">
+  <h2 style="color:#0a0a0a">The headline the Calculate screen would show today</h2>
+  <div style="font-size:clamp(20px,3vw,28px);font-weight:900;letter-spacing:-.01em;line-height:1.15">Qwen3-8B · 4k context · 500 words in, 200 out → <u>runs on this laptop alone</u> at ≈3.0 tok/s. First word after ≈58 s, answer in ≈2 min. Adding the phone over the USB-debugging cable would make it 3× <i>slower</i>.</div>
+  <div class="small" style="color:#0a0a0a;margin-top:8px">3.0 tok/s <span class="tag m">m</span> (3.05 measured on this laptop) · 58 s and 2 min <span class="tag e">e</span> derived from measured prompt speed · phone cost 0.72 s per token <span class="tag e">e</span> derived from the measured 1.2–1.4 tok/s adb split</div>
+</section>
+
+<section>
+  <h2>Measured tonight, before any design</h2>
+  <div class="grid4">
+    <div class="card flat tile"><div class="k">laptop free memory</div><div class="v">2.6 → 14.0 GB</div><div class="s">Four idle Gradle/Kotlin build daemons held 10.7 GB. The planner refused every model until they were stopped. <span class="tag m">m</span></div></div>
+    <div class="card flat tile"><div class="k">phone room for models</div><div class="v">0.6 GB</div><div class="s">2.07 GB available minus the 1.5 GB safety margin, with your apps open. About 2 GB with apps closed. <span class="tag m">m</span></div></div>
+    <div class="card flat tile"><div class="k">Qwen3-8B per layer</div><div class="v">116 MB</div><div class="s">36 layers, 5.0 GB weights, 0.9 GB input/output tables, 4 KB of memory per token per layer. From the planner's dry run. <span class="tag m">m</span></div></div>
+    <div class="card flat tile"><div class="k">download speed</div><div class="v">1.1 MB/s</div><div class="s">Hugging Face tonight, versus 13 MB/s this afternoon. A 5 GB model is over an hour. <span class="tag m">m</span></div></div>
+  </div>
+</section>
+
+<section>
+  <h2>1 · The three model picks</h2>
+  <div class="grid3">
+    <div class="card">
+      <span class="pill ok">chat</span>
+      <h3 style="margin-top:10px">gpt-oss-20b for laptop + 1 phone</h3>
+      <p class="small">12.1 GB, 24 layers. Mixture of experts: each layer is ≈451 MB resident but only ≈77 MB is read per token, so it is cheap to run once placed. Needs the laptop plus a phone with ≥2 GB free. <span class="tag e">e</span></p>
+      <div class="tbl" style="margin-top:10px"><table>
+        <tr><th>model</th><th class="num">file</th><th class="num">layers</th><th class="num">per layer</th><th>fits</th></tr>
+        <tr><td>Qwen3-8B</td><td class="num">5.0 GB</td><td class="num">36</td><td class="num">116 MB</td><td>laptop alone</td></tr>
+        <tr><td>Qwen3-14B</td><td class="num">9.0 GB</td><td class="num">40</td><td class="num">201 MB</td><td>laptop alone (tight)</td></tr>
+        <tr class="rec"><td><b>gpt-oss-20b</b></td><td class="num">12.1 GB</td><td class="num">24</td><td class="num">451 MB</td><td>laptop + 1 phone</td></tr>
+        <tr class="rec"><td><b>Mistral-Small 24B</b></td><td class="num">14.3 GB</td><td class="num">40</td><td class="num">338 MB</td><td>laptop + 2 phones</td></tr>
+        <tr><td>Qwen3-30B-A3B</td><td class="num">18.6 GB</td><td class="num">48</td><td class="num">380 MB</td><td>needs an iQOO-15-class phone</td></tr>
+      </table></div>
+      <p class="small" style="margin-top:8px">Per-layer bytes come from each model's config and published file size, ±10–15 % until the real file is read. Newer Qwen3.5 and Gemma 4 rank higher on quality but were not researched.</p>
+    </div>
+    <div class="card">
+      <span class="pill warn">image making</span>
+      <h3 style="margin-top:10px">stable-diffusion.cpp, as a spike only</h3>
+      <p class="small">Same ggml core and the same RPC transport we already use. It can put the text encoders, the drawing network and the decoder on different devices, but never cut <i>inside</i> the drawing network. <span class="tag s">s</span></p>
+      <div class="tbl" style="margin-top:10px"><table>
+        <tr><th>model</th><th class="num">size</th><th class="num">steps</th><th>where</th></tr>
+        <tr><td>SD 1.5 Q8</td><td class="num">2.1 GB</td><td class="num">20</td><td>laptop alone</td></tr>
+        <tr><td>SDXL-Turbo Q4</td><td class="num">5.7 GB</td><td class="num">1–4</td><td>laptop alone</td></tr>
+        <tr><td>FLUX.1-schnell Q4</td><td class="num">11–12 GB</td><td class="num">4</td><td>fit unknown <span class="tag u">?</span></td></tr>
+      </table></div>
+      <p class="small" style="margin-top:8px">No CPU timing exists anywhere for this engine. Estimate 30 s to 3 min per 512×512 image on this laptop <span class="tag e">e</span>. No part fits the POCO F5 except SD 1.5's tiny encoder. Measure SD 1.5 first; promise nothing before that.</p>
+    </div>
+    <div class="card">
+      <span class="pill ok">reads images &amp; documents</span>
+      <h3 style="margin-top:10px">Qwen2.5-VL-3B, already proven here</h3>
+      <p class="small">3.3 GB with its projector, 36 language layers. It described a real screenshot correctly in 150 s on this laptop <span class="tag m">m</span>. Image tokens = width × height ÷ 784.</p>
+      <div class="tbl" style="margin-top:10px"><table>
+        <tr><th>model</th><th class="num">size</th><th>strength</th></tr>
+        <tr class="rec"><td><b>Qwen2.5-VL-3B</b></td><td class="num">3.3 GB</td><td>DocVQA 93.9 · OCRBench 797</td></tr>
+        <tr><td>Granite-Docling 258M</td><td class="num">0.3 GB</td><td>documents → markdown; fits the phone</td></tr>
+        <tr><td>MiniCPM-V-4.5</td><td class="num">6.1 GB</td><td>best OCR (89.0); version-pin risk</td></tr>
+        <tr><td class="small">Qwen3-VL</td><td class="num small">—</td><td class="small">avoid: open accuracy bug</td></tr>
+      </table></div>
+      <p class="small" style="margin-top:8px">PDFs: extract text when the file has a text layer; otherwise turn pages into images (≈2,800 tokens per A4 page → 150–200 s per page here <span class="tag e">e</span>). The image encoder always runs on the laptop; only language layers can move to a phone.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>2 · Layer rules: what can be combined with what</h2>
+  <div class="card">
+    <div class="eyebrow" style="margin-bottom:8px">QWEN3-8B · 36 BLOCKS · SHOWN AS THE "WHY NOT SPLIT" CASE: LAPTOP 0–22, PHONE 23–35</div>
+    <div class="bar">
+      <div class="pin" style="flex:0 0 92px">embd · host</div>
+      <div class="h" style="flex:23">blocks 0–22 · laptop · 23 × 116 MB</div>
+      <div class="w" style="flex:13">blocks 23–35 · phone · 13 × 116 MB</div>
+      <div class="pin" style="flex:0 0 92px">head · host</div>
+      <div class="v" style="flex:0 0 100px">vision · host</div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--pin)"></i>pinned to the host (never moves)</span>
+      <span><i style="background:var(--host)"></i>laptop range</span>
+      <span><i style="background:var(--worker)"></i>phone range</span>
+      <span><i style="background:var(--info)"></i>image encoder + projector (vision models only)</span>
+    </div>
+    <div class="two" style="margin-top:16px">
+      <div class="tbl"><table>
+        <tr><th>unit</th><th>rule</th><th>who says so</th></tr>
+        <tr><td><b>token embedding</b></td><td>stays on the host</td><td>engine: "always keep it on the CPU" <span class="tag s">s</span></td></tr>
+        <tr><td><b>block i</b> = attention + feed-forward (+ all experts) + its own KV memory</td><td>must stay together as one unit</td><td>experts and KV: engine <span class="tag s">s</span> · attention+FFN: our policy (each cut = one more network hop per token)</td></tr>
+        <tr><td><b>blocks 0…n−1</b></td><td>contiguous ranges; host takes the first ones, each phone one range after it</td><td>engine interface <span class="tag s">s</span>; matches our measured placement 0–3 / 4–14 / 15–27 <span class="tag m">m</span></td></tr>
+        <tr><td><b>output head</b></td><td>stays on the host</td><td>our policy: moving it would send 608 KB of logits per token instead of a 16 KB activation</td></tr>
+        <tr><td><b>vision encoder + projector</b></td><td>stays on the host</td><td>our policy, enforced with <code>--no-mmproj-offload</code></td></tr>
+      </table></div>
+      <div>
+        <h3>Hard limits from the engine</h3>
+        <ul class="small" style="font-size:13.5px">
+          <li>A tensor lives on exactly one device. Experts of a layer cannot be spread over devices.</li>
+          <li>At most 16 phones per host. Traffic between two phones goes through the laptop (a star).</li>
+          <li>What crosses the link per token: one activation of n_embd × 4 bytes. For an 8B model that is 16 KB. The measured adb split is slow because of relay latency, not bandwidth.</li>
+          <li>Changing the placement means a full reload.</li>
+        </ul>
+        <div class="callout" style="margin-top:12px"><b>Three gaps found in today's llama-server arguments</b> <span class="tag s">s</span> (verify on the phone first, task T070): in a split the 1.3 GB vision projector would land on the phone; for tied-embedding models like Qwen3-0.6B the output head lands on the last phone unbudgeted; and <code>--fit</code> is on by default and may change the plan we calculated. Fixes: <code>--no-mmproj-offload</code>, a wider <code>-ot</code> pin, <code>--fit off</code>.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>3 · Calculate: compute and time for one request</h2>
+  <div class="two">
+    <div>
+      <pre>memory fit     weights + context × KV/token + compute buffer  ≤  room on the device
+decode / token  t_d = bytes read per token ÷ memory bandwidth     (CPU is memory-bound)
+link / phone    h   = α (fixed cost per token) + 2 × 16 KB ÷ link rate
+token time      T   = Σ t_d + Σ h + 2 ms          →  tok/s = 1000 ÷ T
+first word      TTFT = prompt FLOPs ÷ compute speed (per device) + link cost per batch
+whole answer    total = TTFT + (N − 1) × T
+MoE             bytes read = dense + experts × active ÷ total   (e, unverified)
+vision          TTFT += encoder time, calibrated from the measured 142 s / 2,154 tokens</pre>
+      <p class="small" style="margin-top:10px">Inputs and where they come from: unit bytes from the model file (exact) · room per device from live telemetry minus the safety margin <span class="tag m">m</span> · bandwidth and compute speed backed out of real single-device runs <span class="tag e">e</span> · link cost α from a 30-second probe, then refined by every real split request <span class="tag e">e</span> · compute buffers read from the engine's own load log after the first run <span class="tag m">m</span>. Every value the screen shows carries <code>{value, low, high, source, n}</code>. An unknown shows no number, only a <b>Measure</b> button.</p>
+    </div>
+    <div class="card host">
+      <h3>Device inputs used below</h3>
+      <div class="tbl" style="background:var(--paper)"><table>
+        <tr><th>device</th><th class="num">room</th><th class="num">bandwidth</th><th class="num">compute</th></tr>
+        <tr><td>laptop (i5-1035G1)</td><td class="num">11.0 GB</td><td class="num">14.3 GB/s</td><td class="num">122 GFLOP/s</td></tr>
+        <tr><td>POCO F5, apps closed</td><td class="num">2.0 GB</td><td class="num">18.2 GB/s</td><td class="num">81 GFLOP/s</td></tr>
+        <tr><td>link: USB-debugging cable</td><td class="num">—</td><td class="num">α 717 ms</td><td class="num">rate ?</td></tr>
+        <tr><td>link: USB tethering</td><td class="num">—</td><td class="num">α 2–12 ms <span class="tag e">e</span></td><td class="num">?</td></tr>
+      </table></div>
+      <p class="small" style="margin-top:8px;color:inherit">Laptop numbers derived from 3.05 tok/s and 8.76 prompt tok/s on Qwen3-8B; phone numbers from 28.8 / 92 tok/s on Qwen3-0.6B; cable cost from the 1.32 tok/s split. All <span class="tag e">e</span> derived from <span class="tag m">m</span>. Tethering has never been measured (that is the 3 tok/s gate).</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="eyebrow" style="margin-bottom:8px">WORKED EXAMPLE · QWEN3-8B Q4_K_M · 4K CONTEXT · 500 TOKENS IN · 200 TOKENS OUT</div>
+    <div class="tbl"><table>
+      <tr><th>case</th><th>stacks</th><th class="num">memory</th><th class="num">GFLOP / token</th><th class="num">compute ms / token</th><th class="num">link ms</th><th class="num">tok/s</th><th class="num">first word</th><th class="num">200-token answer</th><th>verdict</th></tr>
+      <tr class="rec"><td><b>Recommended</b></td><td>laptop 0–35 + in/out</td><td class="num">5.9 / 11.0 GB</td><td class="num">15.5</td><td class="num">334</td><td class="num">—</td><td class="num"><b>3.0</b></td><td class="num">≈58 s</td><td class="num">≈2.0 min</td><td><span class="pill ok">can run</span> laptop alone</td></tr>
+      <tr><td>Why not split (cable)</td><td>laptop 0–22 + in/out · phone 23–35</td><td class="num">4.5 / 1.9 GB</td><td class="num">10.4 / 5.1</td><td class="num">226 / 85</td><td class="num">720</td><td class="num"><b>≈1.0</b></td><td class="num">≈70 s</td><td class="num">≈4.6 min</td><td><span class="pill no">slower</span> not chosen</td></tr>
+      <tr><td>Same split, USB tethering</td><td>same</td><td class="num">same</td><td class="num">same</td><td class="num">226 / 85</td><td class="num">≈7</td><td class="num">≈3.1</td><td class="num">≈69 s</td><td class="num">≈2.2 min</td><td><span class="pill dim">a tie</span> unmeasured</td></tr>
+    </table></div>
+    <div class="grid2" style="margin-top:14px">
+      <div>
+        <div class="eyebrow">STACK · RECOMMENDED</div>
+        <div class="bar" style="margin-top:6px"><div class="pin" style="flex:0 0 60px">in/out</div><div class="h" style="flex:36">laptop · blocks 0–35 · 334 ms per token</div></div>
+        <div class="eyebrow" style="margin-top:10px">STACK · WHY NOT SPLIT</div>
+        <div class="bar" style="margin-top:6px"><div class="pin" style="flex:0 0 60px">in/out</div><div class="h" style="flex:23">laptop 0–22 · 226 ms</div><div class="w" style="flex:13">phone 23–35 · 85 ms + 720 ms link</div></div>
+      </div>
+      <div class="callout">
+        <b>Per device verdicts:</b> laptop <span class="pill ok">capable</span> host, 36 of 36 layers · POCO F5 <span class="pill ok">capable</span> up to 13 layers, <b>not needed</b>.<br>
+        <b>The lesson the screen must teach:</b> splitting is for memory, never for speed. Even over a fast link the phone's compute is below the laptop's, so the best a split can do on this model is tie.<br><br>
+        <b>If the laptop only had 4 GB free:</b> it keeps 1.16 GB of fixed tables plus 21 blocks; the phone would need 15 blocks = 2.14 GB, more than its 2.0 → <span class="pill no">cannot run</span> at 4k, short by 0.14 GB. <span class="pill warn">capable only with</span> a 2k context: phone takes 22–35 (1.89 GB) → ≈1.0 tok/s on the cable, ≈3.2 tok/s on tethering <span class="tag e">e</span>. Today's planner ignores compute buffers and would wrongly say "fits".
+      </div>
+    </div>
+  </div>
+  <p class="small" style="margin-top:10px">Prior art checked: exo, prima.cpp, distributed-llama, cake and Petals all split automatically, and none shows a predicted time per request before running. That display is MeshAI's differentiator.</p>
+</section>
+
+<section>
+  <h2>4 · The screens: three steps on the laptop, a view-only mirror on the phone</h2>
+  <div class="steps" style="margin-bottom:12px"><span class="on">1 Devices</span>→<span class="on">2 Model</span>→<span class="on">3 Calculate &amp; Run</span><span class="small" style="border:0;background:none;padding:0">chat opens after Run · one developer drawer replaces the Advanced toggle</span></div>
+  <div class="grid3">
+    <div class="mock">
+      <div class="t"><span>Step 1 · Devices</span><span class="pill ok" style="font-size:10px">2 in the mesh</span></div>
+      <div class="row"><span class="btn">Pair over USB</span><span class="btn ghost">Show QR</span></div>
+      <div class="row">
+        <div class="box host"><b>this laptop</b> ☑<br>room 11.0 GB · speed 14 GB/s <span class="tag m">m</span><br><span class="pill ok" style="font-size:10px">can host, can help</span></div>
+        <div class="box"><b>POCO F5</b> ☑<br>room 2.0 GB · speed 18 GB/s <span class="tag e">e</span><br>link: USB cable · 0.72 s per token <span class="tag m">m</span><br><span class="pill warn" style="font-size:10px">slow link → turn on USB tethering</span><br><span class="btn ghost" style="margin-top:6px">Measure</span></div>
+      </div>
+    </div>
+    <div class="mock">
+      <div class="t"><span>Step 2 · Model</span><span class="small">using laptop + POCO F5 · 13.0 GB</span></div>
+      <div class="row">
+        <div class="box"><b>Qwen3 8B</b><br>5.0 GB · 36 layers · text, tools<br><span class="pill ok" style="font-size:10px">fits the laptop alone</span></div>
+        <div class="box"><b>gpt-oss-20b</b><br>12.1 GB · 24 layers · MoE, tools<br><span class="pill ok" style="font-size:10px">laptop + phone</span></div>
+        <div class="box"><b>Qwen2.5-VL 3B</b><br>2.1 + 1.3 GB · text + images<br><span class="pill ok" style="font-size:10px">fits the laptop alone</span></div>
+      </div>
+      <div class="row small">memory for the conversation: ○ 2k &nbsp;● 4k &nbsp;○ 8k</div>
+      <div class="row"><span class="btn">Next: calculate →</span></div>
+    </div>
+    <div class="mock">
+      <div class="t"><span>Step 3 · Calculate &amp; Run</span><span class="btn" style="padding:3px 8px">Calculate</span></div>
+      <div class="box host"><b>✓ CAN RUN on this laptop alone</b> (5.9 of 11.0 GB)<br>first word ≈58 s <span class="tag e">e</span> · 3.0 tok/s <span class="tag m">m</span> · answer ≈2 min <span class="tag e">e</span><br><span class="small">last time: 3.05 tok/s measured</span></div>
+      <div class="bar" style="height:26px"><div class="pin" style="flex:0 0 48px">in/out</div><div class="h" style="flex:36">laptop 0–35</div></div>
+      <div class="small">laptop · 0–35 · 5.9 GB · 15.5 GFLOP · 334 ms · capable, host<br>POCO F5 · — · capable (13 layers), not needed<br>▸ why not the phone too? laptop 0–22 + phone 23–35 → ≈1.0 tok/s: the cable adds 0.72 s per token</div>
+      <div class="row"><span class="btn">Run this plan</span><span class="btn ghost">details: host, args</span></div>
+      <div class="box dim">then CHAT here: attachments · last answer measured vs predicted</div>
+    </div>
+  </div>
+  <div class="two" style="margin-top:16px;align-items:start">
+    <div class="phone">
+      <div class="t" style="font-weight:900;letter-spacing:.08em;font-size:11px">PHONE · MESH (VIEW ONLY)</div>
+      <div class="steps"><span class="on">1 ✓</span><span class="on">2 ✓</span><span class="on">3 ✓</span><span>running</span></div>
+      <div><b>Qwen3 8B</b> · Q4_K_M · 4k memory</div>
+      <div class="bar" style="height:24px"><div class="pin" style="flex:0 0 40px">i/o</div><div class="h" style="flex:36">laptop 0–35</div></div>
+      <div class="small">this laptop · 0–35 · 5.9 GB<br><b>POCO F5 (me)</b> · can help with 13 layers · not needed</div>
+      <div class="box host" style="border:2px solid var(--ink);border-radius:8px;padding:8px">Can run on the laptop alone · ≈3.0 tok/s · first word ≈58 s</div>
+      <div class="small">Status: ready · last answer 3.1 tok/s<br>Questions and answers stay on the laptop.</div>
+    </div>
+    <div>
+      <h3>What partners see and never see</h3>
+      <p class="small" style="font-size:13.5px">A partner phone gets a <code>MeshView</code> message over the control plane: devices, the chosen model, the stacks, the verdict and the prediction. By schema it has no prompt, answer or address fields, and a test proves it cannot start or stop anything. The <code>Plan</code> message stays the only thing that makes a phone act.</p>
+      <h3 style="margin-top:14px">Keep / remove from today's panel</h3>
+      <ul class="small" style="font-size:13.5px">
+        <li><b>Keep:</b> the RIGHT NOW bar and per-device checklist, one-click USB pairing and the QR, device and model cards, the stacked layer bar, chat with attachments, Stop.</li>
+        <li><b>Remove or move:</b> the JavaScript fit guess (<code>file × 1.15 + 0.2 GB</code>) → the server's verdict · separate Run and Chat pages → step 3 · "who runs it" and permission lists → a details drawer · the Advanced toggle → one developer drawer.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>5 · Build order: riskiest assumption first, each slice checked on the POCO F5</h2>
+  <div class="tbl"><table>
+    <tr><th>#</th><th>slice</th><th>task</th><th>proven by</th></tr>
+    <tr><td>S0</td><td><b>No-code experiment:</b> is the link cost per token stable? Qwen3-0.6B, phone gets 4 / 14 / 24 layers, three chats each; 14 layers at 2k and 8k context; <code>adb push</code> 500 MB for the bulk rate. Kill criterion: prediction error or drift above 30 %.</td><td>T071 (+T070)</td><td>rows in the benchmark table</td></tr>
+    <tr><td>S1</td><td>Layer config from the model file the core already parses; <code>meshd layers</code>; <code>GET /api/models/{file}/layers</code></td><td>T072</td><td>block bytes sum to within 1 % of the three files on disk</td></tr>
+    <tr><td>S2</td><td>Argument fixes (<code>--fit off</code>, <code>--no-mmproj-offload</code>, wider head pin); read per-device buffers from the load log; 5 % placement check</td><td>T073</td><td>phone buffer shrinks by the head size; projector stays on the laptop</td></tr>
+    <tr><td>S3</td><td>Cost model + <code>POST /api/calculate</code> + session + <code>calc_id</code> (409 if the plan would differ at Run)</td><td>T074</td><td>golden test of the worked example; S0 predicted vs measured</td></tr>
+    <tr><td>S4</td><td>Calibration store, real echo RTT (today's "adb RTT" never crosses the cable), phone bench report, link probe</td><td>T075</td><td>probe cost within 30 % of S0</td></tr>
+    <tr><td>S5</td><td>The three-step panel</td><td>T076</td><td>headless QA + screenshot with the phone paired</td></tr>
+    <tr><td>S6</td><td>Phone view-only mirror</td><td>T077</td><td>phone screenshot; privacy test</td></tr>
+    <tr><td>S7</td><td><b>Gate:</b> predictions within 30 % of measured tok/s and first-word time on three real configurations</td><td>T078</td><td>rows in the benchmark table → accept or reject D032</td></tr>
+    <tr><td>S8</td><td>Measure the link cost over USB tethering or hotspot → settles the ≥3 tok/s gate with the calculator's own numbers</td><td>T004 / T007</td><td>rows in the benchmark table</td></tr>
+  </table></div>
+  <p class="small" style="margin-top:10px">Risks recorded as K23–K30: wrong estimates, the cable being too slow for any split, large MoE blocks, unbudgeted compute buffers, memory changing between Calculate and Run, partner-view leaks, the 60 ms RTT policy once RTT is real, and image generation having no benchmark at all.</p>
+</section>
+
+<footer class="small">Everything on this page is recorded in <b>docs/MESHAI.md</b> (§17, decision D032 proposed, risks K23–K30, research R005–R008) and <b>state/tasks.json</b> (T070–T078). Nothing here is built yet. Measured numbers come from the laptop (IdeaPad 3, i5-1035G1, 19.5 GB) and the POCO F5 (Snapdragon 7+ Gen 2, 8 GB) on 24 Sep 2026.</footer>
+
+</div>
+</body>
+</html>

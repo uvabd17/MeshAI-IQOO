@@ -205,8 +205,22 @@ impl<R: Read> Rd<R> {
     }
 }
 
+/// Everything the header holds: the summary (`info`), the raw metadata and the full tensor table.
+/// `layers::layer_config` builds the placement units from this (T072, D032 §17.3).
+#[derive(Debug, Clone)]
+pub struct Gguf {
+    pub info: ModelInfo,
+    pub kv: BTreeMap<String, Value>,
+    pub tensors: Vec<TensorInfo>,
+}
+
 /// Read a GGUF file's metadata and tensor table. Touches only the header, never the weights.
 pub fn read(path: impl AsRef<Path>) -> Result<ModelInfo, GgufError> {
+    Ok(read_full(path)?.info)
+}
+
+/// Like [`read`], but keeps the metadata and the per-tensor table (name, dims, type, bytes).
+pub fn read_full(path: impl AsRef<Path>) -> Result<Gguf, GgufError> {
     let path = path.as_ref();
     let file_bytes = std::fs::metadata(path)?.len();
     let mut f = BufReader::with_capacity(1 << 20, File::open(path)?);
@@ -338,7 +352,7 @@ pub fn read(path: impl AsRef<Path>) -> Result<ModelInfo, GgufError> {
         .to_string();
     let quant_label = quant_label_from(path, &kv);
 
-    Ok(ModelInfo {
+    let info = ModelInfo {
         path: path.display().to_string(),
         file_bytes,
         version,
@@ -356,7 +370,13 @@ pub fn read(path: impl AsRef<Path>) -> Result<ModelInfo, GgufError> {
         layer_bytes,
         kv_bytes_per_token,
         tensor_count: n_tensors,
-    })
+    };
+    Ok(Gguf { info, kv, tensors })
+}
+
+/// `blk.17.attn_q.weight` → Some(17); public for the layer-config builder.
+pub fn layer_index_of(name: &str) -> Option<u32> {
+    layer_index(name)
 }
 
 /// `blk.17.attn_q.weight` → Some(17)

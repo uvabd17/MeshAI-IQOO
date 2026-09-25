@@ -10,11 +10,13 @@ Team Maynards · iQOO Hackathon 2026 (Developer Tools).
 
 Machine-readable state lives in `state/` (`progress.md`, `tasks.json`, `tests.json`, `blockers.md`).
 
-## Status (24 Sep 2026, branch `native-mesh-v2`)
+## Status (25 Sep 2026, branch `native-mesh-v2`, paused)
 
-- Laptop service `meshd`, the Android app and the three-page admin panel are built and were executed with a real POCO F5.
-- Works: pairing over USB (one click) or QR; phone as host (28.8 tok/s on Qwen3-0.6B); laptop+phone layer split with correct multi-turn answers; image chat on the laptop.
-- Open: split speed over a native link (USB tethering / hotspot) has not been measured; Windows scripts exist but never ran on Windows; the Oracle mirror waits for approval.
+Read **section 0 of `docs/MESHAI.md`** first: what works on real hardware, what is built but not yet run on a phone, the open items, and how to pick the work up.
+
+- Works on hardware: USB/QR pairing, phone as host (28.8 tok/s on a 0.6B model), laptop+phone layer split (1.2–1.4 tok/s over the USB-debugging cable, 7–9 tok/s over home Wi-Fi), image chat and speech-to-text on the laptop.
+- Built, tested on the laptop, waiting for a phone session: the guided four-step panel (Devices → Models → Prepare → Use), USB care, cache-aware resume on the phone.
+- Open: the ≥3 tok/s gate on a model that fits neither device, four reviewer fixes listed in section 0, Windows on a real machine, the universal adapter (designed, not built).
 
 ## Layout
 
