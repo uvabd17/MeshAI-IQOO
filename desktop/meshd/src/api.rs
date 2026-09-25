@@ -776,8 +776,21 @@ async fn api_usb_pair(State(st): State<Arc<AppState>>, Json(r): Json<UsbPairReq>
     }
     // Forward every port the phone may pick for its RPC worker (it falls back when Android has
     // reserved the planned one at runtime), plus the control plane and API in reverse.
+    //
+    // HOST_PORT belongs in this list too: when the planner makes the PHONE the host, meshd polls
+    // http://127.0.0.1:<HOST_PORT>/health and proxies /v1 there. Without the forward the phone
+    // loads the model, starts llama-server and serves happily while the laptop waits for a port
+    // nothing is listening on, and the run dies minutes later as a timeout with no useful message.
+    let host_port = meshcore::HOST_LLAMA_PORT.to_string();
     let ports = [
-        "50052", "50062", "50070", "50080", "50100", "50200", "51000",
+        "50052",
+        "50062",
+        "50070",
+        "50080",
+        "50100",
+        "50200",
+        "51000",
+        host_port.as_str(),
     ];
     let mut steps: Vec<Vec<String>> = vec![
         vec![
